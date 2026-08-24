@@ -1,0 +1,607 @@
+import { FamilyMember, IncomeStream } from '../types';
+
+export interface MonthlyIncomeResult {
+  totalFixedIncome: number;
+  totalValesIncome: number;
+  totalExtraIncome: number;
+  totalFamilyIncome: number;
+  memberTotals: Record<string, { fixed: number; vales: number; extra: number; total: number }>;
+}
+
+export function getBrazilianHolidays(year: number): Set<string> {
+  const holidays = new Set<string>();
+  const pad = (n: number) => String(n).padStart(2, '0');
+
+  // Standard national holidays (YYYY-MM-DD)
+  holidays.add(`${year}-01-01`); // Confraternização Universal
+  holidays.add(`${year}-04-21`); // Tiradentes
+  holidays.add(`${year}-05-01`); // Dia do Trabalho
+  holidays.add(`${year}-09-07`); // Independência do Brasil
+  holidays.add(`${year}-10-12`); // Nossa Senhora Aparecida
+  holidays.add(`${year}-11-02`); // Finados
+  holidays.add(`${year}-11-15`); // Proclamação da República
+  holidays.add(`${year}-11-20`); // Dia da Consciência Negra
+  holidays.add(`${year}-12-25`); // Natal
+
+  // Easter and related moveable holidays (Anonymous Gregorian algorithm)
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+
+  const easter = new Date(year, month - 1, day);
+
+  // Good Friday (Sexta-Feira Santa): Easter - 2 days
+  const goodFriday = new Date(easter);
+  goodFriday.setDate(easter.getDate() - 2);
+  holidays.add(`${year}-${pad(goodFriday.getMonth() + 1)}-${pad(goodFriday.getDate())}`);
+
+  // Carnival Tuesday: Easter - 47 days
+  const carnival = new Date(easter);
+  carnival.setDate(easter.getDate() - 47);
+  holidays.add(`${year}-${pad(carnival.getMonth() + 1)}-${pad(carnival.getDate())}`);
+
+  // Corpus Christi: Easter + 60 days
+  const corpusChristi = new Date(easter);
+  corpusChristi.setDate(easter.getDate() + 60);
+  holidays.add(`${year}-${pad(corpusChristi.getMonth() + 1)}-${pad(corpusChristi.getDate())}`);
+
+  return holidays;
+}
+
+export function calculateValesWorkDays(
+  monthKey: string,
+  workDays: string[],
+  workOnHolidays: boolean
+): number {
+  if (!monthKey || !workDays || workDays.length === 0) return 0;
+
+  const [yearStr, monthStr] = monthKey.split('-');
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+
+  if (isNaN(year) || isNaN(month)) return 0;
+
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const holidays = workOnHolidays ? new Set<string>() : getBrazilianHolidays(year);
+
+  const dayCodeMap: Record<number, string> = {
+    0: 'sun',
+    1: 'mon',
+    2: 'tue',
+    3: 'wed',
+    4: 'thu',
+    5: 'fri',
+    6: 'sat',
+  };
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  let workedDaysCount = 0;
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const date = new Date(year, month - 1, d);
+    const dayCode = dayCodeMap[date.getDay()];
+
+    if (workDays.includes(dayCode)) {
+      const dateStr = `${year}-${pad(month)}-${pad(d)}`;
+      if (!workOnHolidays && holidays.has(dateStr)) {
+        continue;
+      }
+      workedDaysCount++;
+    }
+  }
+
+  return workedDaysCount;
+}
+
+export function getStreamAmount(stream: IncomeStream, monthKey?: string): number {
+  if (stream.nature === 'extra') {
+    return stream.amount || 0;
+  }
+  if (stream.nature === 'vales' && stream.calculationType === 'auto') {
+    const key = monthKey || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+    const daily = stream.dailyRate || 0;
+    const days = calculateValesWorkDays(
+      key,
+      stream.workDays || ['mon', 'tue', 'wed', 'thu', 'fri'],
+      stream.workOnHolidays ?? false
+    );
+    return daily * days;
+  }
+  return stream.amount || stream.targetGoal || 0;
+}
+
+export function saveIncomeStreamToStorage(
+  memberId: string,
+  streamData: Omit<IncomeStream, 'id'> & { id?: string; icon?: string; isAccumulate?: boolean },
+  monthKey: string = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+  groupId?: string,
+  applyToAllMonths: boolean = true
+): IncomeStream {
+  let incomesMap: Record<string, any> = {};
+  try {
+    const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
+    if (saved) {
+      incomesMap = JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error('Error reading incomes:', e);
+  }
+
+  // 1. Check flat member array
+  const flatStreams: IncomeStream[] = Array.isArray(incomesMap[memberId]) ? incomesMap[memberId] : [];
+
+  // 2. Check monthly member array
+  const monthData = incomesMap[monthKey] || {};
+  const monthStreams: IncomeStream[] = Array.isArray(monthData[memberId]) ? monthData[memberId] : [];
+
+  // Use whichever list exists and has items, or flat array
+  const baseList = monthStreams.length > 0 ? monthStreams : (flatStreams.length > 0 ? flatStreams : []);
+
+  const existingIndex = baseList.findIndex(
+    (s) => (streamData.id && s.id === streamData.id) || s.name.trim().toLowerCase() === streamData.name.trim().toLowerCase()
+  );
+
+  let updatedStream: IncomeStream;
+  let updatedList: IncomeStream[];
+
+  if (existingIndex >= 0) {
+    const target = baseList[existingIndex];
+    let newAmount: number;
+    if (streamData.isAccumulate) {
+      newAmount = (target.amount || 0) + (streamData.amount || 0);
+    } else {
+      newAmount = streamData.amount !== undefined ? streamData.amount : (target.amount || 0);
+    }
+
+    let newHistory = target.history || [];
+    if (streamData.history !== undefined) {
+      newHistory = streamData.history;
+    } else if (streamData.isAccumulate && (streamData.amount || 0) > 0) {
+      const now = new Date();
+      const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}`;
+      newHistory = [
+        {
+          id: 'entry_' + Date.now(),
+          amount: streamData.amount || 0,
+          date: dateStr,
+          notes: streamData.notes,
+        },
+        ...newHistory,
+      ];
+    }
+
+    const lastEntry = streamData.lastEntryAmount !== undefined
+      ? streamData.lastEntryAmount
+      : (streamData.isAccumulate ? (streamData.amount || 0) : target.lastEntryAmount);
+
+    updatedStream = {
+      ...target,
+      ...streamData,
+      id: target.id,
+      name: streamData.name || target.name,
+      amount: newAmount,
+      targetGoal: streamData.targetGoal !== undefined ? streamData.targetGoal : target.targetGoal,
+      nature: streamData.nature || target.nature,
+      dueDate: streamData.dueDate || target.dueDate || 's/ previsão',
+      isRecurrent: streamData.isRecurrent !== undefined ? streamData.isRecurrent : (target.isRecurrent ?? true),
+      icon: streamData.icon || target.icon,
+      received: newAmount > 0 ? true : (streamData.received !== undefined ? streamData.received : target.received),
+      receivedDate: streamData.receivedDate || target.receivedDate || new Date().toISOString().split('T')[0],
+      notes: streamData.notes !== undefined ? streamData.notes : target.notes,
+      history: newHistory,
+      lastEntryAmount: lastEntry,
+      calculationType: streamData.calculationType || target.calculationType,
+      dailyRate: streamData.dailyRate !== undefined ? streamData.dailyRate : target.dailyRate,
+      workDays: streamData.workDays || target.workDays,
+      workOnHolidays: streamData.workOnHolidays !== undefined ? streamData.workOnHolidays : target.workOnHolidays,
+    };
+    updatedList = baseList.map((s, idx) => (idx === existingIndex ? updatedStream : s));
+  } else {
+    updatedStream = {
+      id: streamData.id || `stream-${Date.now()}`,
+      name: streamData.name,
+      amount: streamData.amount !== undefined ? streamData.amount : 0,
+      targetGoal: streamData.targetGoal,
+      nature: streamData.nature || 'fixed',
+      icon: streamData.icon,
+      dueDate: streamData.dueDate || 's/ previsão',
+      isRecurrent: streamData.isRecurrent ?? true,
+      received: streamData.received ?? false,
+      receivedDate: streamData.receivedDate || (streamData.received ? new Date().toISOString().split('T')[0] : undefined),
+      notes: streamData.notes,
+      isMain: streamData.isMain || false,
+      calculationType: streamData.calculationType,
+      dailyRate: streamData.dailyRate,
+      workDays: streamData.workDays,
+      workOnHolidays: streamData.workOnHolidays,
+    };
+    updatedList = [...baseList, updatedStream];
+  }
+
+  let updatedMap: Record<string, any>;
+  if (applyToAllMonths) {
+    // Helper to deduplicate stream list by ID
+    const dedupe = (list: IncomeStream[]) => {
+      const seen = new Set<string>();
+      return list.filter((item) => {
+        const key = item.id || `${item.name}-${item.dueDate}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+
+    const cleanUpdatedList = dedupe(updatedList);
+
+    updatedMap = {
+      ...incomesMap,
+      [memberId]: cleanUpdatedList,
+      [monthKey]: {
+        ...monthData,
+        [memberId]: cleanUpdatedList,
+      },
+    };
+
+    // Also update any future stored month keys (strictly future months, k > monthKey)
+    Object.keys(updatedMap).forEach((k) => {
+      if (k.match(/^\d{4}-\d{2}$/) && k > monthKey && updatedMap[k]?.[memberId]) {
+        const futureList = updatedMap[k][memberId] as IncomeStream[];
+        if (streamData.id) {
+          updatedMap[k][memberId] = dedupe(futureList.map((s) => (s.id === streamData.id ? updatedStream : s)));
+        } else {
+          // If future month didn't have it, add it uniquely
+          const alreadyHas = futureList.some((s) => s.id === updatedStream.id || s.name.trim().toLowerCase() === updatedStream.name.trim().toLowerCase());
+          if (!alreadyHas) {
+            updatedMap[k][memberId] = dedupe([...futureList, updatedStream]);
+          }
+        }
+      }
+    });
+  } else {
+    // Helper to deduplicate stream list by ID
+    const dedupe = (list: IncomeStream[]) => {
+      const seen = new Set<string>();
+      return list.filter((item) => {
+        const key = item.id || `${item.name}-${item.dueDate}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+
+    // Ensure baseline default for other unvisited months retains the original unedited streams
+    const baseRootList = incomesMap[memberId] && Array.isArray(incomesMap[memberId]) && incomesMap[memberId].length > 0
+      ? incomesMap[memberId]
+      : baseList;
+
+    // Only update this specific month
+    updatedMap = {
+      ...incomesMap,
+      [memberId]: dedupe(baseRootList),
+      [monthKey]: {
+        ...monthData,
+        [memberId]: dedupe(updatedList),
+      },
+    };
+  }
+
+  try {
+    localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(updatedMap));
+    localStorage.setItem('wepay_monthly_incomes', JSON.stringify(updatedMap));
+    window.dispatchEvent(new Event('wepay_incomes_updated'));
+  } catch (e) {
+    console.error('Error saving incomes map:', e);
+  }
+
+  return updatedStream;
+}
+
+export function deleteIncomeStreamFromStorage(
+  memberId: string,
+  streamId: string,
+  monthKey: string = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+  applyToAllMonths: boolean = false
+): void {
+  let incomesMap: Record<string, any> = {};
+  try {
+    const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
+    if (saved) {
+      incomesMap = JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error('Error reading incomes for deletion:', e);
+  }
+
+  const monthData = incomesMap[monthKey] || {};
+  let currentStreams: IncomeStream[] = [];
+  if (monthData[memberId] && Array.isArray(monthData[memberId])) {
+    currentStreams = monthData[memberId];
+  } else if (incomesMap[memberId] && Array.isArray(incomesMap[memberId])) {
+    currentStreams = incomesMap[memberId];
+  }
+
+  const updatedList = currentStreams.filter((s) => s.id !== streamId);
+  let updatedMap: Record<string, any> = {};
+
+  if (applyToAllMonths) {
+    const baseList = (incomesMap[memberId] && Array.isArray(incomesMap[memberId])) ? incomesMap[memberId] : currentStreams;
+    const cleanBaseList = baseList.filter((s: IncomeStream) => s.id !== streamId);
+
+    updatedMap = {
+      ...incomesMap,
+      [memberId]: cleanBaseList,
+      [monthKey]: {
+        ...monthData,
+        [memberId]: updatedList,
+      },
+    };
+
+    // Also remove from any future month keys
+    Object.keys(updatedMap).forEach((k) => {
+      if (k.match(/^\d{4}-\d{2}$/) && k > monthKey && updatedMap[k]?.[memberId] && Array.isArray(updatedMap[k][memberId])) {
+        updatedMap[k][memberId] = updatedMap[k][memberId].filter((s: IncomeStream) => s.id !== streamId);
+      }
+    });
+  } else {
+    const baseRootList = incomesMap[memberId] && Array.isArray(incomesMap[memberId])
+      ? incomesMap[memberId]
+      : currentStreams;
+
+    updatedMap = {
+      ...incomesMap,
+      [memberId]: baseRootList,
+      [monthKey]: {
+        ...monthData,
+        [memberId]: updatedList,
+      },
+    };
+  }
+
+  try {
+    localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(updatedMap));
+    localStorage.setItem('wepay_monthly_incomes', JSON.stringify(updatedMap));
+    window.dispatchEvent(new Event('wepay_incomes_updated'));
+  } catch (e) {
+    console.error('Error saving incomes map after deletion:', e);
+  }
+}
+
+export function getMonthlyIncomeData(
+  monthKey: string,
+  members: FamilyMember[]
+): MonthlyIncomeResult {
+  let incomesMap: any = {};
+  let monthlyIncomesMap: any = {};
+
+  try {
+    const savedV3 = localStorage.getItem('wepay_couple_incomes_v3');
+    if (savedV3) incomesMap = JSON.parse(savedV3);
+
+    const savedMonthly = localStorage.getItem('wepay_monthly_incomes');
+    if (savedMonthly) monthlyIncomesMap = JSON.parse(savedMonthly);
+  } catch (e) {
+    console.error('Error reading incomes from localStorage:', e);
+  }
+
+  const monthData = incomesMap[monthKey] || monthlyIncomesMap[monthKey] || {};
+
+  let totalFixedIncome = 0;
+  let totalValesIncome = 0;
+  let totalExtraIncome = 0;
+  const memberTotals: Record<string, { fixed: number; vales: number; extra: number; total: number }> = {};
+
+  members.forEach((member) => {
+    let streams: IncomeStream[] | undefined = undefined;
+
+    if (monthData[member.id] && Array.isArray(monthData[member.id])) {
+      streams = monthData[member.id];
+    } else if (incomesMap[member.id] && Array.isArray(incomesMap[member.id])) {
+      streams = incomesMap[member.id];
+    } else if (monthlyIncomesMap[member.id] && Array.isArray(monthlyIncomesMap[member.id])) {
+      streams = monthlyIncomesMap[member.id];
+    }
+
+    if (streams === undefined) {
+      const isDemo = typeof window !== 'undefined' && localStorage.getItem('wepay_is_demo') === 'true';
+      if (member.income && member.income > 0) {
+        streams = [
+          {
+            id: `main-${member.id}`,
+            name: 'Salário / Renda Principal',
+            amount: member.income,
+            nature: 'fixed',
+            isMain: true,
+          },
+        ];
+      } else if (isDemo) {
+        streams = [
+          {
+            id: `main-${member.id}`,
+            name: 'Salário / Renda Principal',
+            amount: 3000,
+            nature: 'fixed',
+            isMain: true,
+          },
+        ];
+      } else {
+        streams = [];
+      }
+    }
+
+    // Deduplicate streams
+    const seen = new Set<string>();
+    streams = (streams || []).filter((s) => {
+      const key = s.id || `${s.name}-${s.dueDate}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const fixed = streams
+      .filter((s) => s.nature === 'fixed' || (s.nature as string) === 'variable')
+      .reduce((acc, s) => acc + (s.amount || 0), 0);
+
+    const vales = streams
+      .filter((s) => s.nature === 'vales')
+      .reduce((acc, s) => acc + getStreamAmount(s, monthKey), 0);
+
+    const extra = streams
+      .filter((s) => s.nature === 'extra')
+      .reduce((acc, s) => acc + Math.max(s.targetGoal || 0, s.amount || 0), 0);
+
+    const memberTotal = fixed + vales + extra;
+
+    memberTotals[member.id] = {
+      fixed,
+      vales,
+      extra,
+      total: memberTotal,
+    };
+
+    totalFixedIncome += fixed;
+    totalValesIncome += vales;
+    totalExtraIncome += extra;
+  });
+
+  const totalFamilyIncome = totalFixedIncome + totalValesIncome + totalExtraIncome;
+
+  return {
+    totalFixedIncome,
+    totalValesIncome,
+    totalExtraIncome,
+    totalFamilyIncome,
+    memberTotals,
+  };
+}
+
+export function getMemberIncomeOptions(
+  whoOption: 'casal' | 'homem' | 'mulher',
+  members: FamilyMember[],
+  monthKey: string = '2026-08'
+): { id: string; name: string; icon: string; nature?: string }[] {
+  let incomesMap: Record<string, any> = {};
+  let monthlyIncomesMap: Record<string, any> = {};
+
+  try {
+    const savedV3 = localStorage.getItem('wepay_couple_incomes_v3');
+    if (savedV3) incomesMap = JSON.parse(savedV3);
+
+    const savedMonthly = localStorage.getItem('wepay_monthly_incomes');
+    if (savedMonthly) monthlyIncomesMap = JSON.parse(savedMonthly);
+  } catch (e) {
+    console.error('Error reading incomes from localStorage:', e);
+  }
+
+  const maleMember: FamilyMember = members[0] || { id: 'm1', name: 'Membro 1', color: '#3b82f6', avatar: '', role: 'admin' };
+  const femaleMember: FamilyMember = members[1] || members[0] || { id: 'm2', name: 'Membro 2', color: '#ec4899', avatar: '', role: 'member' };
+
+  const getExtraStreamsForMember = (member: FamilyMember) => {
+    if (!member) return [];
+
+    let streams: IncomeStream[] = [];
+
+    if (incomesMap[member.id] && Array.isArray(incomesMap[member.id])) {
+      streams = incomesMap[member.id];
+    } else if (monthlyIncomesMap[monthKey] && monthlyIncomesMap[monthKey][member.id] && Array.isArray(monthlyIncomesMap[monthKey][member.id])) {
+      streams = monthlyIncomesMap[monthKey][member.id];
+    }
+
+    if (streams && streams.length > 0) {
+      const extraOnly = streams.filter(
+        (s) => s.nature !== 'fixed' && !s.isMain && !s.name.toLowerCase().includes('salário') && !s.name.toLowerCase().includes('salario')
+      );
+      if (extraOnly.length > 0) {
+        return extraOnly.map((s) => ({
+          id: s.id,
+          name: s.name,
+          icon: s.icon || (s.nature === 'vales' ? '🍱' : '💻'),
+          nature: s.nature,
+        }));
+      }
+    }
+    return [];
+  };
+
+  let result: { id: string; name: string; icon: string; nature?: string }[] = [];
+
+  if (whoOption === 'homem') {
+    result = getExtraStreamsForMember(maleMember);
+  } else if (whoOption === 'mulher') {
+    result = getExtraStreamsForMember(femaleMember);
+  } else {
+    const m1Streams = getExtraStreamsForMember(maleMember);
+    const m2Streams = getExtraStreamsForMember(femaleMember);
+    result = [...m1Streams, ...m2Streams];
+  }
+
+  const uniqueResult: { id: string; name: string; icon: string; nature?: string }[] = [];
+  const seenNames = new Set<string>();
+  for (const item of result) {
+    if (!seenNames.has(item.name)) {
+      seenNames.add(item.name);
+      uniqueResult.push(item);
+    }
+  }
+
+  if (!seenNames.has('Outros')) {
+    uniqueResult.push({
+      id: 'outros',
+      name: 'Outros',
+      icon: '💵',
+      nature: 'extra',
+    });
+  }
+
+  return uniqueResult;
+}
+
+/**
+ * Format member names with initial capital letters for each word.
+ * E.g. "thiago silva" -> "Thiago Silva", "MARIA" -> "Maria"
+ */
+export function formatMemberName(name?: string): string {
+  if (!name) return '';
+  return name
+    .trim()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
+export function getFullMemberIncomeStreams(
+  memberId: string,
+  monthKey: string = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
+): IncomeStream[] {
+  let incomesMap: Record<string, any> = {};
+  let monthlyIncomesMap: Record<string, any> = {};
+  try {
+    const savedV3 = localStorage.getItem('wepay_couple_incomes_v3');
+    if (savedV3) incomesMap = JSON.parse(savedV3);
+    const savedMonthly = localStorage.getItem('wepay_monthly_incomes');
+    if (savedMonthly) monthlyIncomesMap = JSON.parse(savedMonthly);
+  } catch (e) {
+    console.error('Error reading incomes:', e);
+  }
+
+  let streams: IncomeStream[] = [];
+  if (monthlyIncomesMap[monthKey] && monthlyIncomesMap[monthKey][memberId] && Array.isArray(monthlyIncomesMap[monthKey][memberId])) {
+    streams = monthlyIncomesMap[monthKey][memberId];
+  } else if (incomesMap[memberId] && Array.isArray(incomesMap[memberId])) {
+    streams = incomesMap[memberId];
+  }
+
+  return (streams || []).filter(
+    (s) => s.nature === 'extra' || (s.nature !== 'fixed' && !s.isMain && !s.name.toLowerCase().includes('salário') && !s.name.toLowerCase().includes('salario'))
+  );
+}

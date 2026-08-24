@@ -1,0 +1,6 @@
+{
+  "name": "WePay",
+  "description": "Controle financeiro inteligente para casais e famílias com IA, suporte a voz e despesas compartilhadas.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

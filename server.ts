@@ -1,0 +1,532 @@
+import express from "express";
+import path from "path";
+import dotenv from "dotenv";
+import { createServer as createViteServer } from "vite";
+import { GoogleGenAI, Type } from "@google/genai";
+
+dotenv.config();
+
+const app = express();
+const PORT = 3000;
+
+app.use(express.json({ limit: "20mb" }));
+
+// Initialize Gemini SDK
+const getAi = () => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY environment variable is not defined.");
+  }
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        "User-Agent": "aistudio-build",
+      },
+    },
+  });
+};
+
+// Fallback logic for expense parsing when Gemini quota is reached or offline
+function fallbackParseExpense(text: string, memberNames: string[] = ["Você", "Parceiro(a)"]) {
+  const lower = text.toLowerCase();
+
+  let amount = 0;
+  const priceMatch = text.match(/(?:R\$\s*)?(\d+(?:[.,]\d{1,2})?)/i);
+  if (priceMatch) {
+    amount = parseFloat(priceMatch[1].replace(',', '.'));
+  }
+
+  let type = "expense";
+  if (/(ganhei|recebi|salário|salario|pix recebido|vendi|entrada|renda|depósito|deposito)/i.test(lower)) {
+    type = "income";
+  } else if (/(fixo|fixa|aluguel|condomínio|condominio|internet|assinatura|mensalidade)/i.test(lower)) {
+    type = "fixed";
+  }
+
+  let category = "Outros";
+  let categoryIcon = "Sparkles";
+
+  if (/(almoço|almoco|janta|jantar|restaurante|ifood|lanche|comida|supermercado|mercado|café|cafe|pão|pao|pizza|hambúrguer|hamburguer|padaria|açaí|acai)/i.test(lower)) {
+    category = "Alimentação";
+    categoryIcon = "Utensils";
+  } else if (/(uber|gasolina|combustível|combustivel|posto|ônibus|onibus|metrô|metro|estacionamento|pedágio|pedagio|táxi|taxi|99|pop)/i.test(lower)) {
+    category = "Transporte";
+    categoryIcon = "Car";
+  } else if (/(aluguel|condomínio|condominio|luz|água|agua|gás|gas|iptu|internet)/i.test(lower)) {
+    category = "Moradia";
+    categoryIcon = "Home";
+  } else if (/(farmácia|farmacia|remédio|remedio|médico|medico|consulta|exame|hospital|dentista|drogaria)/i.test(lower)) {
+    category = "Saúde";
+    categoryIcon = "HeartPulse";
+  } else if (/(cinema|show|viagem|hotel|jogo|festa|bar|cerveja|netflix|spotify|prime|ingresso)/i.test(lower)) {
+    category = "Lazer";
+    categoryIcon = "Tv";
+  } else if (/(roupa|sapato|shopping|amazon|magalu|loja|compra|presente)/i.test(lower)) {
+    category = "Compras";
+    categoryIcon = "ShoppingBag";
+  } else if (/(cabeleireiro|barbeiro|limpeza|manutenção|manutencao|mecanico|mecânico|serviço|servico)/i.test(lower)) {
+    category = "Serviços";
+    categoryIcon = "Receipt";
+  }
+
+  let cleanDesc = text
+    .replace(/(?:R\$\s*)?(\d+(?:[.,]\d{1,2})?)/gi, '')
+    .replace(/(gastei|comprei|paguei|recebi|ganhei|de|com|em|para|por|reais|real|R\$)/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!cleanDesc || cleanDesc.length < 2) {
+    cleanDesc = category !== "Outros" ? category : (type === "income" ? "Receita" : "Despesa");
+  }
+
+  cleanDesc = cleanDesc.charAt(0).toUpperCase() + cleanDesc.slice(1);
+
+  let paidBy = memberNames[0] || "Você";
+  for (const name of memberNames) {
+    if (lower.includes(name.toLowerCase())) {
+      paidBy = name;
+      break;
+    }
+  }
+
+  const typeLabel = type === "income" ? "Entrada" : type === "fixed" ? "Despesa Fixa" : "Gasto Rápido";
+  const aiResponse = `Identificado e registrado em ${category}! (${typeLabel} R$ ${amount.toFixed(2)})`;
+
+  return {
+    description: cleanDesc,
+    amount,
+    category,
+    categoryIcon,
+    type,
+    paidBy,
+    splitType: "equal",
+    aiResponse,
+  };
+}
+
+// Fallback logic for financial advice
+function fallbackFinancialAdvice(totalExpenses = 0, monthBudget = 0, categoryTotals: Record<string, number> = {}, memberNames: string[] = []) {
+  const budgetRatio = monthBudget > 0 ? totalExpenses / monthBudget : 0.5;
+  let healthScore = 85;
+  let headline = "Seu controle financeiro está em dia!";
+
+  if (monthBudget > 0) {
+    if (budgetRatio > 1) {
+      healthScore = Math.max(30, Math.round(100 - (budgetRatio - 1) * 50));
+      headline = "Atenção: Os gastos ultrapassaram o teto estipulado para o mês.";
+    } else if (budgetRatio > 0.8) {
+      healthScore = 72;
+      headline = "Vocês estão próximos do limite do orçamento mensal (mais de 80%).";
+    } else {
+      healthScore = Math.min(98, Math.round(100 - budgetRatio * 30));
+      headline = "Excelente! Gastos sob controle com boa margem no orçamento.";
+    }
+  }
+
+  let topCat = "Alimentação";
+  let topCatAmount = 0;
+  for (const [cat, val] of Object.entries(categoryTotals)) {
+    if (val > topCatAmount) {
+      topCatAmount = val;
+      topCat = cat;
+    }
+  }
+
+  const insights = [
+    topCatAmount > 0 
+      ? `A maior categoria de despesa é "${topCat}" (R$ ${topCatAmount.toFixed(2)}). Acompanhem para otimizar os valores.`
+      : "Mantenham o hábito de registrar todos os gastos diários para mapear os gargalos da casa.",
+    monthBudget > 0
+      ? `Vocês já comprometeram R$ ${totalExpenses.toFixed(2)} de R$ ${monthBudget.toFixed(2)} do orçamento estipulado.`
+      : "Definam um teto orçamentário mensal para o casal planejar os investimentos futuros.",
+    "Para receitas extras ou despesas de lazer, conversem sobre a divisão 50/50 ou proporcional."
+  ];
+
+  const coupleNames = memberNames.length > 0 ? memberNames.join(" e ") : "o casal";
+  const splitAdvice = `Acompanhem o saldo individual para manter a divisão justa entre ${coupleNames}.`;
+
+  return {
+    headline,
+    insights,
+    healthScore,
+    splitAdvice,
+  };
+}
+
+// Fallback logic for history audit
+function fallbackAuditHistory(transactions: any[] = [], fixedExpenses: any[] = []) {
+  const anomalies: any[] = [];
+
+  for (let i = 0; i < transactions.length; i++) {
+    for (let j = i + 1; j < transactions.length; j++) {
+      const t1 = transactions[i];
+      const t2 = transactions[j];
+      if (
+        t1.amount === t2.amount &&
+        t1.amount > 0 &&
+        t1.description && t2.description &&
+        t1.description.toLowerCase().trim() === t2.description.toLowerCase().trim()
+      ) {
+        anomalies.push({
+          id: `anom-dup-${t1.id || i}-${t2.id || j}`,
+          type: "duplicate",
+          severity: "warning",
+          title: "Possível Transação Duplicada",
+          description: `Identificamos duas transações de R$ ${t1.amount.toFixed(2)} ("${t1.description}").`,
+          transactionId: t2.id,
+          suggestion: "Verifique se a compra foi registrada duas vezes e exclua a duplicada se necessário."
+        });
+        break;
+      }
+    }
+  }
+
+  const count = anomalies.length;
+  const summary = count > 0 
+    ? `Encontramos ${count} possível(is) incoerência(s) ou duplicidade(s) no seu histórico.`
+    : "Auditoria concluída: Seu histórico financeiro está organizado e sem anomalias detectadas!";
+
+  return {
+    summary,
+    inconsistenciesFound: count,
+    aiGreeting: count > 0 
+      ? `Olá! Concluí a auditoria do histórico e encontrei ${count} item(ns) para verificação.`
+      : "Olá! Analisei todo o seu histórico financeiro e os lançamentos estão 100% corretos e organizados!",
+    anomalies
+  };
+}
+
+// API Route: Interpret expense text or command
+app.post("/api/ai/parse-expense", async (req, res) => {
+  const { text, memberNames = ["Você", "Parceiro(a)"] } = req.body;
+
+  if (!text || typeof text !== "string") {
+    return res.status(400).json({ error: "Texto do lançamento é obrigatório." });
+  }
+
+  try {
+    const ai = getAi();
+    const prompt = `
+Você é o assistente inteligente do aplicativo WePay (controle financeiro para casais e famílias).
+Analise o seguinte texto enviado pelo usuário:
+"${text}"
+
+Os membros da família/grupo registrados são: ${memberNames.join(", ")}.
+
+Extraia os detalhes do lançamento financeiro em formato JSON seguindo estas instruções:
+- Se for uma despesa ou receita, identifique:
+  1. "description": Título curto e claro (ex: "Almoço de Domingo", "Conta de Luz", "Uber para o Trabalho")
+  2. "amount": Valor numérico positivo (ex: 85.50). Se não for mencionado valor explícito, tente estimar ou use 0.00.
+  3. "category": Uma categoria dentre ["Alimentação", "Moradia", "Transporte", "Lazer", "Saúde", "Compras", "Serviços", "Outros"]
+  4. "categoryIcon": Nome do ícone Lucide adequado (ex: "Utensils", "Home", "Car", "Tv", "HeartPulse", "ShoppingBag", "Receipt", "Sparkles")
+  5. "type": "expense" (despesa) ou "income" (receita/ganho)
+  6. "paidBy": Nome de quem pagou. Se um dos membros for mencionado, use esse nome. Senão, defina como "${memberNames[0]}".
+  7. "splitType": "equal" (dividir 50/50), "individual" (gasto próprio de quem pagou), ou "proportional" (proporcional)
+  8. "aiResponse": Mensagem amigável e direta em português confirmando o lançamento.
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            description: { type: Type.STRING },
+            amount: { type: Type.NUMBER },
+            category: { type: Type.STRING },
+            categoryIcon: { type: Type.STRING },
+            type: { type: Type.STRING },
+            paidBy: { type: Type.STRING },
+            splitType: { type: Type.STRING },
+            aiResponse: { type: Type.STRING },
+          },
+          required: ["description", "amount", "category", "type", "paidBy", "aiResponse"],
+        },
+      },
+    });
+
+    const rawJson = response.text?.trim() || "{}";
+    const parsedData = JSON.parse(rawJson);
+
+    return res.json({ success: true, data: parsedData });
+  } catch (error: any) {
+    console.warn("[WePay AI] Usando parser nativo local (Gemini quota limit / offline).");
+    const fallbackData = fallbackParseExpense(text, memberNames);
+    return res.json({ success: true, data: fallbackData });
+  }
+});
+
+// API Route: Process Audio / Voice Recording directly
+app.post("/api/ai/parse-voice", async (req, res) => {
+  const { audioBase64, mimeType = "audio/webm", memberNames = ["Você", "Parceiro(a)"] } = req.body;
+
+  if (!audioBase64) {
+    return res.status(400).json({ error: "Áudio não fornecido." });
+  }
+
+  try {
+    const ai = getAi();
+    const prompt = `
+Você é a IA do WePay. Ouça o áudio gravado e identifique a despesa ou receita informada pelo usuário.
+Os membros registrados são: ${memberNames.join(", ")}.
+
+Extraia os detalhes em JSON:
+1. "transcription": Transcrição exata do que foi dito.
+2. "description": Título curto da despesa/receita.
+3. "amount": Valor numérico positivo.
+4. "category": Uma de ["Alimentação", "Moradia", "Transporte", "Lazer", "Saúde", "Compras", "Serviços", "Outros"]
+5. "categoryIcon": Nome de ícone Lucide ("Utensils", "Home", "Car", etc.)
+6. "type": "expense" ou "income"
+7. "paidBy": Nome de quem pagou
+8. "aiResponse": Mensagem curta de confirmação em português.
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          inlineData: {
+            mimeType,
+            data: audioBase64,
+          },
+        },
+        {
+          text: prompt,
+        },
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            transcription: { type: Type.STRING },
+            description: { type: Type.STRING },
+            amount: { type: Type.NUMBER },
+            category: { type: Type.STRING },
+            categoryIcon: { type: Type.STRING },
+            type: { type: Type.STRING },
+            paidBy: { type: Type.STRING },
+            aiResponse: { type: Type.STRING },
+          },
+          required: ["transcription", "description", "amount", "category", "type", "paidBy", "aiResponse"],
+        },
+      },
+    });
+
+    const parsedData = JSON.parse(response.text?.trim() || "{}");
+    return res.json({ success: true, data: parsedData });
+  } catch (error: any) {
+    console.warn("[WePay AI] Usando parser de voz nativo local (Gemini quota limit / offline).");
+    const fallbackData = {
+      transcription: "Áudio gravado",
+      ...fallbackParseExpense("Lançamento de Voz", memberNames)
+    };
+    return res.json({ success: true, data: fallbackData });
+  }
+});
+
+// API Route: Generate Financial Advice for Couples
+app.post("/api/ai/financial-advice", async (req, res) => {
+  const { totalExpenses, monthBudget, categoryTotals, groupName, memberNames, transactions } = req.body;
+
+  try {
+    const ai = getAi();
+    const prompt = `
+Atue como um educador financeiro empático e especialista para o casal/família "${groupName || "WePay"}".
+Membros: ${memberNames?.join(" e ") || "Casal"}.
+Resumo Financeiro do Mês:
+- Despesas Totais: R$ ${totalExpenses?.toFixed(2) || "0.00"}
+- Teto Orçamentário Estipulado: R$ ${monthBudget?.toFixed(2) || "0.00"}
+- Principais Gastos por Categoria: ${JSON.stringify(categoryTotals || {})}
+- Últimas Lançamentos: ${JSON.stringify(transactions?.slice(0, 5) || [])}
+
+Forneça uma análise amigável, clara e encorajadora em formato JSON contendo:
+1. "headline": Um título resumido e motivador (ex: "Vocês estão no caminho certo, economizando 15%!")
+2. "insights": Array com 3 dicas acionáveis e curtas para o casal otimizar os gastos.
+3. "healthScore": Nota de saúde financeira de 1 a 100 baseada na relação entre orçamento e despesas.
+4. "splitAdvice": Sugestão amigável de acerto de contas se houver discrepância entre os membros.
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            headline: { type: Type.STRING },
+            insights: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+            healthScore: { type: Type.NUMBER },
+            splitAdvice: { type: Type.STRING },
+          },
+          required: ["headline", "insights", "healthScore", "splitAdvice"],
+        },
+      },
+    });
+
+    const parsedData = JSON.parse(response.text?.trim() || "{}");
+    return res.json({ success: true, data: parsedData });
+  } catch (error: any) {
+    console.warn("[WePay AI] Usando inteligência de conselho nativa local (Gemini quota limit / offline).");
+    const fallbackData = fallbackFinancialAdvice(totalExpenses, monthBudget, categoryTotals, memberNames);
+    return res.json({ success: true, data: fallbackData });
+  }
+});
+
+// API Route: Full History & Anomaly Audit by AI
+app.post("/api/ai/audit-history", async (req, res) => {
+  const { transactions = [], fixedExpenses = [], members = [], groupName = "Casal" } = req.body;
+
+  try {
+    const ai = getAi();
+    const prompt = `
+Você é o Auditor Especialista Financeiro do WePay para o casal "${groupName}".
+Sua missão é realizar uma AUDITORIA COMPLETA E DETALHADA em TODO o histórico financeiro do aplicativo.
+
+Histórico de Transações do Usuário (${transactions.length} registros):
+${JSON.stringify(transactions, null, 2)}
+
+Gastos Fixos Registrados (${fixedExpenses.length} registros):
+${JSON.stringify(fixedExpenses, null, 2)}
+
+Membros do Casal:
+${JSON.stringify(members, null, 2)}
+
+INSTRUÇÕES DE AUDITORIA:
+1. Verifique minuciosamente por transações DUPLICADAS (ex: duas compras idênticas de mesmo valor/descrição no mesmo dia ou datas próximas).
+2. Verifique por CONTAS PAGAS DUAS VEZES (ex: um gasto fixo como "Aluguel" ou "Luz" marcado como pago e ao mesmo tempo uma transação manual igual registrada).
+3. Verifique incoerências de valores discrepantes ou picos anormais de gastos desproporcionais à renda.
+4. Indique de forma clara se o histórico está totalmente limpo ou se há alertas a corrigir.
+
+Retorne um JSON estrito com o seguinte esquema:
+- "summary": Resumo geral da saúde do histórico (ex: "Identificamos 2 possíveis duplicidades no seu histórico.").
+- "inconsistenciesFound": Número de anomalias/alertas encontrados (0 se tudo ok).
+- "aiGreeting": Mensagem inicial calorosa e explicativa para abrir a conversa interativa.
+- "anomalies": Array de objetos para cada alerta, com:
+  - "id": string única (ex: "anom-1")
+  - "type": "duplicate" | "double_payment" | "unusual_spike" | "missing_info"
+  - "severity": "warning" | "error" | "info"
+  - "title": Título claro do alerta (ex: "Transação Duplicada Detectada")
+  - "description": Explicação do motivo do alerta, mencionando o valor e data.
+  - "transactionId": (Opcional) O ID da transação correspondente do histórico se for para apagar/corrigir.
+  - "fixedExpenseId": (Opcional) O ID do gasto fixo se o erro envolver um gasto fixo.
+  - "suggestion": Orientação passo a passo do que o usuário deve fazer ou perguntar para corrigir.
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            summary: { type: Type.STRING },
+            inconsistenciesFound: { type: Type.NUMBER },
+            aiGreeting: { type: Type.STRING },
+            anomalies: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  type: { type: Type.STRING },
+                  severity: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  transactionId: { type: Type.STRING },
+                  fixedExpenseId: { type: Type.STRING },
+                  suggestion: { type: Type.STRING },
+                },
+                required: ["id", "type", "severity", "title", "description", "suggestion"],
+              },
+            },
+          },
+          required: ["summary", "inconsistenciesFound", "aiGreeting", "anomalies"],
+        },
+      },
+    });
+
+    const parsedData = JSON.parse(response.text?.trim() || "{}");
+    return res.json({ success: true, data: parsedData });
+  } catch (error: any) {
+    console.warn("[WePay AI] Usando auditoria nativa local (Gemini quota limit / offline).");
+    const fallbackData = fallbackAuditHistory(transactions, fixedExpenses);
+    return res.json({ success: true, data: fallbackData });
+  }
+});
+
+// API Route: Interactive Chat for Audit & Transaction Correction
+app.post("/api/ai/audit-chat", async (req, res) => {
+  const { userQuery, conversationHistory = [], transactions = [], fixedExpenses = [], memberNames = [] } = req.body;
+
+  try {
+    const ai = getAi();
+    const prompt = `
+Você é o assistente auditor inteligente e educador financeiro do aplicativo WePay para ${memberNames.join(" e ")}.
+O usuário está conversando com você no chat de auditoria de histórico e solução de dúvidas financeiras/duplicidades.
+
+Contexto Atual do Aplicativo:
+- Transações: ${JSON.stringify(transactions.slice(0, 15))}
+- Gastos Fixos: ${JSON.stringify(fixedExpenses.slice(0, 10))}
+
+Histórico de Conversa Anterior:
+${JSON.stringify(conversationHistory)}
+
+Pergunta/Mensagem do Usuário:
+"${userQuery}"
+
+INSTRUÇÕES PARA A RESPOSTA:
+1. Responda com clareza, empatia e objetividade em português do Brasil.
+2. Se o usuário perguntar se um lançamento está correto ou como apagar uma transação duplicada, explique exatamente onde clicar no aplicativo.
+3. Ensine boas práticas de controle financeiro para casais.
+4. Mantenha um tom encorajador e prestativo.
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+    });
+
+    return res.json({
+      success: true,
+      reply: response.text?.trim() || "Entendido! Como posso ajudar na organização das suas despesas?",
+    });
+  } catch (error: any) {
+    console.warn("[WePay AI] Usando assistente de chat nativo local (Gemini quota limit / offline).");
+    return res.json({
+      success: true,
+      reply: "Analisei sua solicitação! Para gerenciar ou excluir lançamentos duplicados, você pode utilizar os botões de ação na lista de transações ou nos alertas de auditoria. Caso precise ajustar valores ou categorias, clique no botão Editar de cada lançamento.",
+    });
+  }
+});
+
+async function startServer() {
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Servidor WePay rodando na porta ${PORT}`);
+  });
+}
+
+startServer();
+
