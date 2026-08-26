@@ -60,6 +60,9 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
   // Step state: 'choose' | 'scanning' | 'review' | 'success'
   const [step, setStep] = useState<'choose' | 'scanning' | 'review' | 'success'>('choose');
   const [scanMessage, setScanMessage] = useState<string>('Otimizando imagem do cupom...');
+  const [scanProgress, setScanProgress] = useState<number>(10);
+  const [scanCurrentModel, setScanCurrentModel] = useState<string>('gemini-3.7-flash');
+  const [scanLogs, setScanLogs] = useState<string[]>([]);
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
 
@@ -111,16 +114,23 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
     try {
       setStep('scanning');
       setScanError(null);
+      setScanProgress(15);
+      setScanCurrentModel('gemini-3.7-flash');
+      setScanLogs(['Carregando arquivo de imagem...']);
       setScanMessage('Analisando nitidez e iluminação da foto...');
 
       // 1. High-precision client-side enhancement for Thermal Receipt OCR
+      setScanProgress(30);
       setScanMessage('Aumentando contraste e preparando cupom para IA...');
+      setScanLogs((prev) => [...prev, 'Otimizando resolução e aplicando contraste para cupom térmico...']);
       const { base64DataUrl, rawBase64, mimeType } = await processAndEnhanceReceiptImage(file);
       if (base64DataUrl) {
         setReceiptImage(base64DataUrl);
       }
 
-      setScanMessage('Identificando produtos, quantidades e preços no cupom fiscal...');
+      setScanProgress(45);
+      setScanMessage('Enviando para leitura neural e extração de itens...');
+      setScanLogs((prev) => [...prev, 'Enviando imagem compactada para análise multimodal...']);
 
       // 2. Fetch with 55-second timeout for thorough OCR
       const controller = new AbortController();
@@ -143,6 +153,8 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
         if (response.ok) {
           const result = await response.json();
           if (result.success && result.data) {
+            setScanProgress(100);
+            setScanLogs((prev) => [...prev, 'Itens extraídos e validados com sucesso pelo servidor.']);
             const data = result.data;
             if (data.storeName) setStoreName(data.storeName);
             if (data.purchaseDate) setPurchaseDate(data.purchaseDate);
@@ -166,7 +178,7 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
                 const hasCalculationMismatch = unitPrice > 0 && quantity > 0 && Math.abs(expectedTotal - totalPrice) > 0.05;
 
                 return {
-                  id: it.id || `item-${Date.now()}-${index}`,
+                  id: `item-${Date.now()}-${index}-${it.id || 'it'}`,
                   name: it.name || `Produto ${index + 1}`,
                   quantity,
                   unitPrice,
@@ -192,14 +204,23 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
             } else {
               setShowAuditModal(false);
             }
+            setStep('review');
             return;
           }
         }
 
         // Direct client-side Gemini fallback if server returned non-ok or error
-        console.log('[WePay OCR] Tentando leitura direta com Gemini client...');
-        const directResult = await parseReceiptWithGeminiDirect(rawBase64, mimeType);
+        setScanLogs((prev) => [...prev, 'Servidor indisponível. Acionando IA direta no navegador...']);
+        const directResult = await parseReceiptWithGeminiDirect(rawBase64, mimeType, (info) => {
+          setScanMessage(info.status);
+          setScanProgress(info.progress);
+          if (info.currentModel) setScanCurrentModel(info.currentModel);
+          if (info.log) setScanLogs((prev) => [...prev, info.log!]);
+        });
+
         if (directResult && Array.isArray(directResult.items) && directResult.items.length > 0) {
+          setScanProgress(100);
+          setScanLogs((prev) => [...prev, 'Leitura concluída com sucesso!']);
           if (directResult.storeName) setStoreName(directResult.storeName);
           if (directResult.purchaseDate) setPurchaseDate(directResult.purchaseDate);
           if (directResult.paymentMethod) setPaymentMethod(directResult.paymentMethod);
@@ -213,7 +234,7 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
             const hasCalculationMismatch = unitPrice > 0 && quantity > 0 && Math.abs(expectedTotal - totalPrice) > 0.05;
 
             return {
-              id: it.id || `item-${Date.now()}-${index}`,
+              id: `item-${Date.now()}-${index}-${it.id || 'it'}`,
               name: it.name || `Produto ${index + 1}`,
               quantity,
               unitPrice,
@@ -226,6 +247,7 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
           setItems(loadedItems);
           setScanError(null);
           setShowAuditModal(false);
+          setStep('review');
           return;
         }
 
@@ -235,10 +257,19 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
           { id: `item-${Date.now()}-1`, name: '', quantity: 1, unitPrice: 0, totalPrice: 0, category: 'Mercearia' }
         ]);
         setShowAuditModal(false);
+        setStep('review');
       } catch (fetchErr: any) {
-        console.warn('Tentando fallback direto de IA após exceção:', fetchErr);
-        const directResult = await parseReceiptWithGeminiDirect(rawBase64, mimeType);
+        setScanLogs((prev) => [...prev, 'Servidor em espera. Acionando IA direta no navegador...']);
+        const directResult = await parseReceiptWithGeminiDirect(rawBase64, mimeType, (info) => {
+          setScanMessage(info.status);
+          setScanProgress(info.progress);
+          if (info.currentModel) setScanCurrentModel(info.currentModel);
+          if (info.log) setScanLogs((prev) => [...prev, info.log!]);
+        });
+
         if (directResult && Array.isArray(directResult.items) && directResult.items.length > 0) {
+          setScanProgress(100);
+          setScanLogs((prev) => [...prev, 'Itens extraídos e categorizados com sucesso!']);
           if (directResult.storeName) setStoreName(directResult.storeName);
           if (directResult.purchaseDate) setPurchaseDate(directResult.purchaseDate);
           if (directResult.paymentMethod) setPaymentMethod(directResult.paymentMethod);
@@ -262,6 +293,7 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
           setItems(loadedItems);
           setScanError(null);
           setShowAuditModal(false);
+          setStep('review');
         } else {
           setScanError(fetchErr?.name === 'AbortError' 
             ? 'Tempo de resposta da IA excedido. Os campos foram liberados para você conferir ou preencher.' 
@@ -271,6 +303,7 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
             { id: `item-${Date.now()}-1`, name: '', quantity: 1, unitPrice: 0, totalPrice: 0, category: 'Mercearia' }
           ]);
           setShowAuditModal(false);
+          setStep('review');
         }
       }
     } catch (err: any) {
@@ -279,8 +312,7 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
       setItems([
         { id: `item-${Date.now()}-1`, name: '', quantity: 1, unitPrice: 0, totalPrice: 0, category: 'Mercearia' }
       ]);
-      setShowAuditModal(true);
-    } finally {
+      setShowAuditModal(false);
       setStep('review');
     }
   };
@@ -701,7 +733,7 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
 
         {/* ================= STEP 2: SCANNING / IA PROGRESS ANIMATION ================= */}
         {step === 'scanning' && (
-          <div className="p-6 sm:p-10 flex flex-col items-center justify-center space-y-6 text-center flex-1">
+          <div className="p-6 sm:p-10 flex flex-col items-center justify-center space-y-5 text-center flex-1 max-w-md mx-auto w-full">
             <div className="relative w-28 h-36 rounded-2xl bg-slate-900 border-2 border-emerald-500/50 p-2 overflow-hidden shadow-2xl shadow-emerald-950/80 flex flex-col justify-between">
               {receiptImage ? (
                 <img src={receiptImage} alt="Cupom" className="w-full h-full object-cover rounded-lg opacity-40 blur-[0.5px]" />
@@ -715,15 +747,49 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
               <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-lg shadow-emerald-400 animate-scanLine" />
             </div>
 
-            <div className="space-y-2 max-w-sm">
-              <div className="flex items-center justify-center gap-2 text-emerald-400 font-black text-sm sm:text-base">
-                <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
-                <span>{scanMessage}</span>
+            {/* Model Badge */}
+            <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900/90 border border-slate-800 text-[11px] font-bold text-slate-300 shadow-inner">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+              <span>Modelo:</span>
+              <span className="text-emerald-400 font-mono font-black">{scanCurrentModel}</span>
+            </div>
+
+            {/* Progress Bar & Percentage */}
+            <div className="w-full space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-300 px-1">
+                <span className="flex items-center gap-1.5 text-emerald-400">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                  <span>Processando Leitura</span>
+                </span>
+                <span className="font-mono text-emerald-400 text-sm font-black">{scanProgress}%</span>
               </div>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Extraindo produtos, quantidades/pesos, preços unitários e verificando a consistência dos valores com a nota fiscal.
+
+              <div className="w-full h-2.5 bg-slate-950/80 rounded-full border border-slate-800 overflow-hidden p-0.5 shadow-inner">
+                <div 
+                  className="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 rounded-full transition-all duration-300 shadow-sm"
+                  style={{ width: `${Math.min(scanProgress, 100)}%` }}
+                />
+              </div>
+
+              <p className="text-xs text-slate-300 font-semibold pt-1">
+                {scanMessage}
               </p>
             </div>
+
+            {/* Live Logs Stream */}
+            {scanLogs.length > 0 && (
+              <div className="w-full p-3 rounded-xl bg-slate-950/80 border border-slate-800/80 text-left space-y-1 max-h-24 overflow-y-auto">
+                <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                  Etapas em Tempo Real:
+                </p>
+                {scanLogs.map((log, index) => (
+                  <div key={index} className="flex items-center gap-1.5 text-[11px] text-slate-400 font-mono">
+                    <span className="text-emerald-500 font-bold">›</span>
+                    <span>{log}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <button
               type="button"
@@ -980,7 +1046,7 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
 
                   return (
                     <div 
-                      key={item.id}
+                      key={`${item.id}-${idx}`}
                       className={`p-3 rounded-2xl transition-all shadow-sm space-y-2.5 ${
                         isCalculationMismatch 
                           ? 'bg-[#181525] border-2 border-amber-500/60 shadow-amber-950/20' 

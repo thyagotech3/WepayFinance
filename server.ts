@@ -23,21 +23,29 @@ app.use((req, res, next) => {
 });
 
 // Initialize Gemini SDK
-// Use active standard Gemini multimodal models
+const DEDICATED_GEMINI_KEY = "AQ.Ab8RN6K1WYUKBJyqK6nHTBxUk623v6IvwueNI89oflY0hKyd4g";
 const PRIMARY_MODEL = "gemini-3.7-flash";
-const FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+const FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-flash-latest"];
 
 const getAi = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = DEDICATED_GEMINI_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY environment variable is not defined.");
   }
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({ 
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
+  });
 };
 
 // Check Gemini AI Configuration Status
 app.get("/api/ai/status", (req, res) => {
-  const hasKey = !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0;
+  const apiKey = DEDICATED_GEMINI_KEY || process.env.GEMINI_API_KEY;
+  const hasKey = !!apiKey && apiKey.trim().length > 0;
   res.json({
     configured: hasKey,
     model: PRIMARY_MODEL,
@@ -80,7 +88,7 @@ async function generateContentWithRetry(params: {
       console.warn(`[WePay AI] Tentativa no modelo ${model} falhou:`, errMsg);
       // Brief pause before fallback if server was busy (503/429)
       if (errMsg.includes("503") || errMsg.includes("UNAVAILABLE") || errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED")) {
-        await new Promise((r) => setTimeout(r, 400));
+        await new Promise((r) => setTimeout(r, 300));
       }
     }
   }
@@ -600,7 +608,7 @@ Regras de Extração:
     const inconsistencies: string[] = [];
 
     const verifiedItems = rawItems.map((item: any, index: number) => {
-      const id = item.id || `item-${index + 1}`;
+      const id = item.id ? `item-${index + 1}-${item.id}` : `item-${index + 1}`;
       const rawName = item.name || `Produto ${index + 1}`;
       const name = cleanReceiptItemName(rawName);
       let quantity = Number(item.quantity) || 1;

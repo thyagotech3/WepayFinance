@@ -29,7 +29,7 @@ export async function processAndEnhanceReceiptImage(
 
       img.onload = () => {
         try {
-          const maxDim = 1200; // Optimal for fast upload and instant OCR without losing receipt item text
+          const maxDim = 900; // Ultra-fast upload, fits perfectly within Vercel serverless limits (<300KB) while maintaining sharp receipt text
           let width = img.width;
           let height = img.height;
 
@@ -63,7 +63,7 @@ export async function processAndEnhanceReceiptImage(
           try {
             const imgData = ctx.getImageData(0, 0, width, height);
             const d = imgData.data;
-            const contrast = 1.2; // 20% contrast boost for clear thermal receipts
+            const contrast = 1.15; // 15% contrast boost for clear thermal receipts
             const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
 
             for (let i = 0; i < d.length; i += 4) {
@@ -77,7 +77,7 @@ export async function processAndEnhanceReceiptImage(
           }
 
           const mimeType = 'image/jpeg';
-          const base64DataUrl = canvas.toDataURL(mimeType, 0.82);
+          const base64DataUrl = canvas.toDataURL(mimeType, 0.75);
           const rawBase64 = base64DataUrl.includes(',') ? base64DataUrl.split(',')[1] : base64DataUrl;
 
           resolve({

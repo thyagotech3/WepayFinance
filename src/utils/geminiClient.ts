@@ -10,6 +10,9 @@ import {
 
 export type { BalanceAIAnalysis };
 
+const CLIENT_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-3.1-pro-preview', 'gemini-flash-latest'];
+const DEDICATED_GEMINI_KEY = 'AQ.Ab8RN6K1WYUKBJyqK6nHTBxUk623v6IvwueNI89oflY0hKyd4g';
+
 export function getGeminiApiKey(): string | null {
   const localKey = localStorage.getItem('wepay_gemini_api_key');
   if (localKey && localKey.trim()) {
@@ -19,7 +22,7 @@ export function getGeminiApiKey(): string | null {
   if (metaEnv && metaEnv.VITE_GEMINI_API_KEY) {
     return metaEnv.VITE_GEMINI_API_KEY;
   }
-  return null;
+  return DEDICATED_GEMINI_KEY;
 }
 
 export function setGeminiApiKey(key: string) {
@@ -30,12 +33,39 @@ export function setGeminiApiKey(key: string) {
   }
 }
 
+async function executeGeminiWithFallback(apiKey: string, generateParams: { contents: any; config?: any }) {
+  const ai = new GoogleGenAI({ apiKey });
+  let lastErr: any = null;
+
+  for (const model of CLIENT_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: generateParams.contents,
+        config: generateParams.config,
+      });
+      if (response && response.text) {
+        return response;
+      }
+    } catch (err: any) {
+      lastErr = err;
+      const errMsg = err?.message || JSON.stringify(err);
+      console.warn(`[WePay Client AI] Modelo ${model} indisponível ou em alta demanda:`, errMsg);
+      // If 503 high demand or 429 rate limit, short delay before trying the next model
+      if (errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('429')) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+  }
+
+  throw lastErr || new Error('Não foi possível processar a requisição de IA.');
+}
+
 export async function parseExpenseWithGemini(text: string, memberNames: string[]) {
   const apiKey = getGeminiApiKey();
 
   if (apiKey) {
     try {
-      const ai = new GoogleGenAI({ apiKey });
       const prompt = `Você é a Joy, assistente financeira inteligente do aplicativo WePay para casais e famílias.
 Sua missão é extrair os dados do lançamento financeiro a partir da frase do usuário.
 Retorne ESTRITAMENTE um JSON sem marcações de código markdown extras, com o formato:
@@ -54,15 +84,14 @@ Retorne ESTRITAMENTE um JSON sem marcações de código markdown extras, com o f
 Frase do usuário: "${text}"
 Membros cadastrados: ${memberNames.join(', ')}`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+      const response = await executeGeminiWithFallback(apiKey, {
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
         },
       });
 
-      if (response.text) {
+      if (response && response.text) {
         const cleanJson = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
         const parsed = JSON.parse(cleanJson);
         if (parsed.amount !== undefined) {
@@ -88,7 +117,6 @@ export async function getFinancialAdviceWithGemini(
 
   if (apiKey) {
     try {
-      const ai = new GoogleGenAI({ apiKey });
       const prompt = `Você é a Joy, consultora financeira inteligente do casal (${memberNames.join(' e ')}).
 Gere uma análise financeira curta, motivadora e acionável em JSON com a estrutura:
 {
@@ -104,15 +132,14 @@ Dados atuais:
 - Gastos por categoria: ${JSON.stringify(categoryTotals)}
 - Integrantes: ${memberNames.join(', ')}`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+      const response = await executeGeminiWithFallback(apiKey, {
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
         },
       });
 
-      if (response.text) {
+      if (response && response.text) {
         const cleanJson = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
         return JSON.parse(cleanJson);
       }
@@ -133,7 +160,6 @@ export async function chatAuditWithGemini(
 
   if (apiKey) {
     try {
-      const ai = new GoogleGenAI({ apiKey });
       const prompt = `Você é a Joy, assistente de finanças pessoais do casal (${memberNames.join(' e ')}).
 Responda a dúvida do usuário de forma amigável, clara e útil em português em no máximo 3 frases.
 
@@ -142,12 +168,11 @@ ${JSON.stringify(transactions.slice(0, 10))}
 
 Dúvida do usuário: "${userQuery}"`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+      const response = await executeGeminiWithFallback(apiKey, {
         contents: prompt,
       });
 
-      if (response.text) {
+      if (response && response.text) {
         return response.text.trim();
       }
     } catch (err) {
@@ -171,7 +196,6 @@ export async function getBalanceAIAnalysisWithGemini(
 
   if (apiKey) {
     try {
-      const ai = new GoogleGenAI({ apiKey });
       const prompt = `Você é a Joy, inteligência artificial financeira do aplicativo WePay para famílias e casais.
 Analise os números do Balanço Geral do mês de ${monthName} para ${memberNames.join(' e ')} e gere um aviso/diagnóstico financeiro executivo de alto impacto.
 
@@ -201,15 +225,14 @@ Retorne ESTRITAMENTE um JSON no seguinte formato (sem markdown codeblocks):
   "incomeCommitmentRate": número_inteiro_porcentagem
 }`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+      const response = await executeGeminiWithFallback(apiKey, {
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
         },
       });
 
-      if (response.text) {
+      if (response && response.text) {
         const cleanJson = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
         const parsed = JSON.parse(cleanJson);
         if (parsed && parsed.headline && parsed.detailedAnalysis) {
@@ -234,13 +257,13 @@ Retorne ESTRITAMENTE um JSON no seguinte formato (sem markdown codeblocks):
 
 export async function parseReceiptWithGeminiDirect(
   base64Image: string,
-  mimeType: string = 'image/jpeg'
+  mimeType: string = 'image/jpeg',
+  onProgress?: (info: { status: string; progress: number; currentModel?: string; log?: string }) => void
 ): Promise<any | null> {
   const apiKey = getGeminiApiKey();
   if (!apiKey) return null;
 
   try {
-    const ai = new GoogleGenAI({ apiKey });
     let cleanBase64 = base64Image.includes(',') ? base64Image.split(',')[1] : base64Image;
     cleanBase64 = cleanBase64.replace(/[\r\n\s]+/g, '');
 
@@ -264,29 +287,68 @@ Analise a imagem da nota fiscal e extraia os dados em formato JSON estrito (sem 
   ]
 }`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.7-flash',
-      contents: [
-        {
-          inlineData: {
-            mimeType: mimeType || 'image/jpeg',
-            data: cleanBase64,
-          },
-        },
-        {
-          text: prompt,
-        },
-      ],
-      config: {
-        responseMimeType: 'application/json',
-      },
-    });
+    const ai = new GoogleGenAI({ apiKey });
+    let lastErr: any = null;
 
-    if (response.text) {
-      let rawText = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(rawText);
-      if (parsed && Array.isArray(parsed.items)) {
-        return parsed;
+    for (let i = 0; i < CLIENT_MODELS.length; i++) {
+      const model = CLIENT_MODELS[i];
+      try {
+        onProgress?.({
+          status: `Processando leitura com IA (${model})...`,
+          progress: 55 + i * 15,
+          currentModel: model,
+          log: `Conectando ao modelo ${model}...`,
+        });
+
+        const response = await ai.models.generateContent({
+          model,
+          contents: [
+            {
+              inlineData: {
+                mimeType: mimeType || 'image/jpeg',
+                data: cleanBase64,
+              },
+            },
+            {
+              text: prompt,
+            },
+          ],
+          config: {
+            responseMimeType: 'application/json',
+          },
+        });
+
+        if (response && response.text) {
+          onProgress?.({
+            status: `Extraindo produtos e auditando valores...`,
+            progress: 95,
+            currentModel: model,
+            log: `Resposta recebida com sucesso de ${model}. Validando itens...`,
+          });
+
+          let rawText = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+          const parsed = JSON.parse(rawText);
+          if (parsed && Array.isArray(parsed.items)) {
+            return parsed;
+          }
+        }
+      } catch (err: any) {
+        lastErr = err;
+        const errMsg = err?.message || JSON.stringify(err);
+        const isDemandIssue = errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('429');
+        
+        onProgress?.({
+          status: isDemandIssue
+            ? `Modelo ${model} ocupado. Alternando automaticamente para ${CLIENT_MODELS[i + 1] || 'próximo'}...`
+            : `Tentativa com ${model} falhou. Alternando modelo...`,
+          progress: 60 + i * 15,
+          currentModel: model,
+          log: `Modelo ${model} retornou ${isDemandIssue ? 'alta demanda (503/429)' : 'erro'}. Alternando...`,
+        });
+
+        if (isDemandIssue) {
+          await new Promise((r) => setTimeout(r, 300));
+        }
       }
     }
   } catch (err) {
@@ -294,4 +356,3 @@ Analise a imagem da nota fiscal e extraia os dados em formato JSON estrito (sem 
   }
   return null;
 }
-

@@ -355,7 +355,7 @@ export const MercadoRaioXModal: React.FC<MercadoRaioXModalProps> = ({
                 const badge = getCategoryBadge(item.category);
 
                 return (
-                  <div key={item.id || idx} className="p-2.5 sm:p-3 flex items-center justify-between gap-2 hover:bg-slate-900/60 transition-colors">
+                  <div key={`${item.id || 'item'}-${idx}`} className="p-2.5 sm:p-3 flex items-center justify-between gap-2 hover:bg-slate-900/60 transition-colors">
                     <div className="flex items-center gap-2.5 min-w-0 flex-1">
                       <span className="w-5 h-5 rounded-lg bg-slate-900 text-slate-500 text-[10px] font-black flex items-center justify-center shrink-0">
                         {idx + 1}
