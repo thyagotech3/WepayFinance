@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "groups": {
+      "title": "Family / Couple Groups",
+      "description": "Groups representing a couple or family account",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "memberUids": { "type": "array", "items": { "type": "string" } },
+        "members": { "type": "array", "items": { "type": "object" } },
+        "inviteCode": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "ownerUid", "memberUids"]
+    },
+    "transactions": {
+      "title": "Transactions",
+      "description": "Financial expenses or income transactions for a group",
+      "type": "object",
+      "properties": {
+        "groupId": { "type": "string" },
+        "description": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "category": { "type": "string" },
+        "splitType": { "type": "string" },
+        "paidByMemberId": { "type": "string" },
+        "affectedMemberIds": { "type": "array", "items": { "type": "string" } },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["groupId", "description", "amount", "date", "category"]
+    },
+    "fixedExpenses": {
+      "title": "Fixed Expenses",
+      "description": "Recurring fixed or variable expenses for a group",
+      "type": "object",
+      "properties": {
+        "groupId": { "type": "string" },
+        "title": { "type": "string" },
+        "amount": { "type": "number" },
+        "dueDate": { "type": "string" },
+        "recurrenceType": { "type": "string" },
+        "category": { "type": "string" },
+        "assignedMemberId": { "type": "string" },
+        "isPaid": { "type": "boolean" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["groupId", "title", "amount", "dueDate"]
+    },
+    "incomes": {
+      "title": "Income Streams",
+      "description": "Income sources per member in a group",
+      "type": "object",
+      "properties": {
+        "groupId": { "type": "string" },
+        "memberId": { "type": "string" },
+        "name": { "type": "string" },
+        "amount": { "type": "number" },
+        "nature": { "type": "string" },
+        "received": { "type": "boolean" },
+        "dueDate": { "type": "string" },
+        "icon": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["groupId", "memberId", "name", "amount"]
+    }
+  }
+}

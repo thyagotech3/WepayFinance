@@ -1,0 +1,12 @@
+{
+  "projectId": "wepay-finance",
+  "appId": "1:803230103535:web:a61305209c224af921a81a",
+  "apiKey": "AIzaSyCtutCr4dKNfzOmDQhlQ9-cSd1RKTVW4ow",
+  "authDomain": "wepay-finance.firebaseapp.com",
+  "firestoreDatabaseId": "",
+  "storageBucket": "wepay-finance.firebasestorage.app",
+  "messagingSenderId": "803230103535",
+  "measurementId": "G-H883WXYT8L",
+  "oAuthClientId": "",
+  "recaptchaSiteKey": ""
+}
