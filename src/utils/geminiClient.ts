@@ -10,7 +10,7 @@ import {
 
 export type { BalanceAIAnalysis };
 
-const CLIENT_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-3.1-pro-preview', 'gemini-flash-latest'];
+const CLIENT_MODELS = ['gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-2.5-pro'];
 
 export function getGeminiApiKey(): string | null {
   const localKey = localStorage.getItem('wepay_gemini_api_key');
