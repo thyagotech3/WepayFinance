@@ -23,12 +23,11 @@ app.use((req, res, next) => {
 });
 
 // Initialize Gemini SDK
-const DEDICATED_GEMINI_KEY = "AQ.Ab8RN6K1WYUKBJyqK6nHTBxUk623v6IvwueNI89oflY0hKyd4g";
 const PRIMARY_MODEL = "gemini-3.7-flash";
 const FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-flash-latest"];
 
 const getAi = () => {
-  const apiKey = DEDICATED_GEMINI_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY environment variable is not defined.");
   }
@@ -44,7 +43,7 @@ const getAi = () => {
 
 // Check Gemini AI Configuration Status
 app.get("/api/ai/status", (req, res) => {
-  const apiKey = DEDICATED_GEMINI_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   const hasKey = !!apiKey && apiKey.trim().length > 0;
   res.json({
     configured: hasKey,

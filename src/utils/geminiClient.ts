@@ -11,7 +11,6 @@ import {
 export type { BalanceAIAnalysis };
 
 const CLIENT_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-3.1-pro-preview', 'gemini-flash-latest'];
-const DEDICATED_GEMINI_KEY = 'AQ.Ab8RN6K1WYUKBJyqK6nHTBxUk623v6IvwueNI89oflY0hKyd4g';
 
 export function getGeminiApiKey(): string | null {
   const localKey = localStorage.getItem('wepay_gemini_api_key');
@@ -22,7 +21,7 @@ export function getGeminiApiKey(): string | null {
   if (metaEnv && metaEnv.VITE_GEMINI_API_KEY) {
     return metaEnv.VITE_GEMINI_API_KEY;
   }
-  return DEDICATED_GEMINI_KEY;
+  return null;
 }
 
 export function setGeminiApiKey(key: string) {
