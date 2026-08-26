@@ -8,6 +8,7 @@ import {
   HelpCircle, Calculator, RefreshCcw, Info, Edit3, Key, Image as ImageIcon
 } from 'lucide-react';
 import { processAndEnhanceReceiptImage } from '../utils/receiptImageProcessor';
+import { parseReceiptWithGeminiDirect } from '../utils/geminiClient';
 
 interface MercadoModalProps {
   members: FamilyMember[];
@@ -191,31 +192,86 @@ export const MercadoModal: React.FC<MercadoModalProps> = ({
             } else {
               setShowAuditModal(false);
             }
-          } else {
-            setScanError(result.error || result.errorMessage || 'A IA não conseguiu identificar itens na foto. Preencha os campos abaixo.');
-            setItems([
-              { id: `item-${Date.now()}-1`, name: '', quantity: 1, unitPrice: 0, totalPrice: 0, category: 'Mercearia' }
-            ]);
-            setShowAuditModal(false);
+            return;
           }
+        }
+
+        // Direct client-side Gemini fallback if server returned non-ok or error
+        console.log('[WePay OCR] Tentando leitura direta com Gemini client...');
+        const directResult = await parseReceiptWithGeminiDirect(rawBase64, mimeType);
+        if (directResult && Array.isArray(directResult.items) && directResult.items.length > 0) {
+          if (directResult.storeName) setStoreName(directResult.storeName);
+          if (directResult.purchaseDate) setPurchaseDate(directResult.purchaseDate);
+          if (directResult.paymentMethod) setPaymentMethod(directResult.paymentMethod);
+          if (directResult.totalAmount) setReceiptPrintedTotal(Number(directResult.totalAmount));
+
+          const loadedItems: ReceiptItem[] = directResult.items.map((it: any, index: number) => {
+            const quantity = Number(it.quantity) || 1;
+            const unitPrice = Number(it.unitPrice) || 0;
+            const totalPrice = Number(it.totalPrice) || Number((quantity * unitPrice).toFixed(2)) || 0;
+            const expectedTotal = Number((quantity * unitPrice).toFixed(2));
+            const hasCalculationMismatch = unitPrice > 0 && quantity > 0 && Math.abs(expectedTotal - totalPrice) > 0.05;
+
+            return {
+              id: it.id || `item-${Date.now()}-${index}`,
+              name: it.name || `Produto ${index + 1}`,
+              quantity,
+              unitPrice,
+              totalPrice,
+              category: it.category || 'Mercearia',
+              hasCalculationMismatch,
+            };
+          });
+
+          setItems(loadedItems);
+          setScanError(null);
+          setShowAuditModal(false);
+          return;
+        }
+
+        // If both failed, provide fallback
+        setScanError('Não foi possível ler todos os dados automaticamente. Os campos foram liberados para ajuste manual.');
+        setItems([
+          { id: `item-${Date.now()}-1`, name: '', quantity: 1, unitPrice: 0, totalPrice: 0, category: 'Mercearia' }
+        ]);
+        setShowAuditModal(false);
+      } catch (fetchErr: any) {
+        console.warn('Tentando fallback direto de IA após exceção:', fetchErr);
+        const directResult = await parseReceiptWithGeminiDirect(rawBase64, mimeType);
+        if (directResult && Array.isArray(directResult.items) && directResult.items.length > 0) {
+          if (directResult.storeName) setStoreName(directResult.storeName);
+          if (directResult.purchaseDate) setPurchaseDate(directResult.purchaseDate);
+          if (directResult.paymentMethod) setPaymentMethod(directResult.paymentMethod);
+          if (directResult.totalAmount) setReceiptPrintedTotal(Number(directResult.totalAmount));
+
+          const loadedItems: ReceiptItem[] = directResult.items.map((it: any, index: number) => {
+            const quantity = Number(it.quantity) || 1;
+            const unitPrice = Number(it.unitPrice) || 0;
+            const totalPrice = Number(it.totalPrice) || Number((quantity * unitPrice).toFixed(2)) || 0;
+
+            return {
+              id: it.id || `item-${Date.now()}-${index}`,
+              name: it.name || `Produto ${index + 1}`,
+              quantity,
+              unitPrice,
+              totalPrice,
+              category: it.category || 'Mercearia',
+            };
+          });
+
+          setItems(loadedItems);
+          setScanError(null);
+          setShowAuditModal(false);
         } else {
-          const errJson = await response.json().catch(() => ({}));
-          setScanError(errJson.error || 'Não foi possível ler o cupom automaticamente. Os campos foram liberados para preenchimento manual.');
+          setScanError(fetchErr?.name === 'AbortError' 
+            ? 'Tempo de resposta da IA excedido. Os campos foram liberados para você conferir ou preencher.' 
+            : 'Falha na conexão com o serviço de IA. Os campos foram liberados para ajuste manual.'
+          );
           setItems([
             { id: `item-${Date.now()}-1`, name: '', quantity: 1, unitPrice: 0, totalPrice: 0, category: 'Mercearia' }
           ]);
           setShowAuditModal(false);
         }
-      } catch (fetchErr: any) {
-        console.warn('Requisição de leitura com IA falhou ou excedeu o tempo:', fetchErr);
-        setScanError(fetchErr?.name === 'AbortError' 
-          ? 'Tempo de resposta da IA excedido. Os campos foram liberados para você conferir ou preencher.' 
-          : 'Falha na conexão com o serviço de IA. Os campos foram liberados para ajuste manual.'
-        );
-        setItems([
-          { id: `item-${Date.now()}-1`, name: '', quantity: 1, unitPrice: 0, totalPrice: 0, category: 'Mercearia' }
-        ]);
-        setShowAuditModal(false);
       }
     } catch (err: any) {
       console.error('Erro ao processar imagem:', err);

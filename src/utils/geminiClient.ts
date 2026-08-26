@@ -232,3 +232,66 @@ Retorne ESTRITAMENTE um JSON no seguinte formato (sem markdown codeblocks):
   );
 }
 
+export async function parseReceiptWithGeminiDirect(
+  base64Image: string,
+  mimeType: string = 'image/jpeg'
+): Promise<any | null> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) return null;
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    let cleanBase64 = base64Image.includes(',') ? base64Image.split(',')[1] : base64Image;
+    cleanBase64 = cleanBase64.replace(/[\r\n\s]+/g, '');
+
+    const prompt = `Você é o mais avançado leitor de cupons e notas fiscais de supermercados brasileiros (NFC-e, SAT, ECF, DANFE simplificado).
+Analise a imagem da nota fiscal e extraia os dados em formato JSON estrito (sem markdown extra):
+{
+  "storeName": "Nome do mercado ou loja",
+  "purchaseDate": "YYYY-MM-DD",
+  "totalAmount": valor_total_float,
+  "paymentMethod": "Forma de pagamento (Cartão de Crédito, Débito, PIX, etc.)",
+  "aiGreeting": "mensagem amigável de leitura dos itens",
+  "items": [
+    {
+      "id": "item-1",
+      "name": "Nome claro do produto",
+      "quantity": float,
+      "unitPrice": float,
+      "totalPrice": float,
+      "category": "Hortifrúti" | "Carnes & Aves" | "Laticínios & Queijos" | "Mercearia" | "Bebidas" | "Padaria & Confeitaria" | "Limpeza" | "Higiene & Cuidados" | "Congelados" | "Pet Shop" | "Outros"
+    }
+  ]
+}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.7-flash',
+      contents: [
+        {
+          inlineData: {
+            mimeType: mimeType || 'image/jpeg',
+            data: cleanBase64,
+          },
+        },
+        {
+          text: prompt,
+        },
+      ],
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    if (response.text) {
+      let rawText = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(rawText);
+      if (parsed && Array.isArray(parsed.items)) {
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.warn('Gemini direct receipt parsing notice:', err);
+  }
+  return null;
+}
+

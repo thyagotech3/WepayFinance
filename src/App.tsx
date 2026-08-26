@@ -32,12 +32,14 @@ import { SettingsView } from './components/SettingsView';
 import { MercadoModal } from './components/MercadoModal';
 import { MercadoRaioXModal } from './components/MercadoRaioXModal';
 import { BottomDock } from './components/BottomDock';
-import { db, doc, setDoc, collection, onSnapshot, query, where, getDocs, auth, onAuthStateChanged, sanitizeForFirestore } from './lib/firebase';
+import { db, doc, setDoc, collection, onSnapshot, query, where, getDocs, auth, onAuthStateChanged, sanitizeForFirestore, FirebaseUser } from './lib/firebase';
 import { saveIncomeStreamToStorage } from './utils/incomeUtils';
 
 export default function App() {
   const now = new Date();
   const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  const [authUser, setAuthUser] = useState<FirebaseUser | null>(() => auth.currentUser);
 
   const [isDemo, setIsDemo] = useState<boolean>(() => {
     return localStorage.getItem('wepay_is_demo') === 'true';
@@ -152,6 +154,7 @@ export default function App() {
   // Auth State Listener to ensure seamless sync with Firebase Auth
   useEffect(() => {
     const authUnsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      setAuthUser(firebaseUser);
       if (firebaseUser && !group) {
         try {
           const userUid = firebaseUser.uid;
@@ -183,9 +186,9 @@ export default function App() {
     return () => authUnsub();
   }, [group]);
 
-  // Firestore Real-Time Synchronization Listeners
+  // Firestore Real-Time Synchronization Listeners (only for authenticated non-demo sessions)
   useEffect(() => {
-    if (!group?.id) return;
+    if (isDemo || !authUser || !group?.id) return;
 
     // 1. Group listener
     const groupUnsub = onSnapshot(
@@ -267,7 +270,7 @@ export default function App() {
       piggyUnsub();
       incomesUnsub();
     };
-  }, [group?.id]);
+  }, [group?.id, authUser, isDemo]);
 
   // Helpers to sync to Firestore
   const syncGroupToFirestore = async (updatedGroup: FamilyGroup) => {
