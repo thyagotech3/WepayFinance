@@ -40,6 +40,7 @@ import {
   deepMergeFixedExpenses,
   recoverFixedExpenses,
   recoverIncomesFromTransactions,
+  dedupeIncomesMap,
 } from './utils/incomeUtils';
 
 export default function App() {
@@ -197,7 +198,7 @@ export default function App() {
           if (saved) currentLocal = JSON.parse(saved);
         } catch (e) {}
 
-        const merged = deepMergeIncomesMaps(currentLocal, remoteMap);
+        const merged = dedupeIncomesMap(deepMergeIncomesMaps(currentLocal, remoteMap));
         localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(merged));
         localStorage.setItem('wepay_monthly_incomes', JSON.stringify(merged));
         window.dispatchEvent(new Event('wepay_incomes_updated'));
@@ -264,7 +265,7 @@ export default function App() {
         try {
           const savedIncomes = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
           const currentMap = savedIncomes ? JSON.parse(savedIncomes) : {};
-          const recoveredIncomes = recoverIncomesFromTransactions(currentMap, remoteTxs, group.members);
+          const recoveredIncomes = dedupeIncomesMap(recoverIncomesFromTransactions(currentMap, remoteTxs, group.members));
           localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(recoveredIncomes));
           localStorage.setItem('wepay_monthly_incomes', JSON.stringify(recoveredIncomes));
           window.dispatchEvent(new Event('wepay_incomes_updated'));
@@ -321,7 +322,7 @@ export default function App() {
             if (saved) currentLocal = JSON.parse(saved);
           } catch (e) {}
 
-          const merged = deepMergeIncomesMaps(currentLocal, remoteMap);
+          const merged = dedupeIncomesMap(deepMergeIncomesMaps(currentLocal, remoteMap));
           localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(merged));
           localStorage.setItem('wepay_monthly_incomes', JSON.stringify(merged));
           window.dispatchEvent(new Event('wepay_incomes_updated'));
@@ -593,10 +594,15 @@ export default function App() {
   ) => {
     deleteIncomeStreamFromStorage(memberId, streamId, monthKey, applyToAllMonths, group?.id);
 
-    // Also remove from transactions
+    // Also remove from transactions.
+    // NOTE: matches both a real incomeStreamId AND the synthetic id
+    // (`rec_inc_<txId>`) used for "phantom" entries auto-recovered from
+    // transaction history — without this, deleting a phantom entry silently
+    // did nothing and it would reappear on the next sync.
     setTransactions((prev) =>
       prev.map((t) => {
-        if (t.incomeStreamId === streamId) {
+        const isMatch = t.incomeStreamId === streamId || `rec_inc_${t.id}` === streamId;
+        if (isMatch) {
           const deletedTx = { ...t, status: 'deleted' as const, revertedAt: new Date().toISOString() };
           syncTransactionToFirestore(deletedTx);
           return deletedTx;

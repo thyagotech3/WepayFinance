@@ -1,6 +1,54 @@
 import { FamilyMember, IncomeStream, FixedExpenseItem, Transaction } from '../types';
 import { db, doc, getDoc, setDoc, sanitizeForFirestore } from '../lib/firebase';
 
+/**
+ * Removes duplicate income entries that were already created by the old
+ * auto-recovery bug (same member + same name + same amount showing up twice,
+ * usually one real entry plus one "phantom" `rec_inc_*` entry).
+ * Safe to run repeatedly — it only ever removes exact duplicates, never data.
+ */
+export function dedupeIncomesMap(incomesMap: Record<string, any> = {}): Record<string, any> {
+  const result: Record<string, any> = { ...(incomesMap || {}) };
+
+  const cleanList = (list: IncomeStream[] = []): IncomeStream[] => {
+    const seen = new Map<string, IncomeStream>();
+    (Array.isArray(list) ? list : []).forEach((item) => {
+      if (!item) return;
+      const key = `${(item.name || '').trim().toLowerCase()}-${item.amount}`;
+      const existing = seen.get(key);
+      if (!existing) {
+        seen.set(key, item);
+        return;
+      }
+      // Prefer the "real" entry over a phantom rec_inc_* one auto-recovered
+      // from transaction history.
+      const existingIsPhantom = String(existing.id || '').startsWith('rec_inc_');
+      const itemIsPhantom = String(item.id || '').startsWith('rec_inc_');
+      if (existingIsPhantom && !itemIsPhantom) {
+        seen.set(key, item);
+      }
+    });
+    return Array.from(seen.values());
+  };
+
+  Object.keys(result).forEach((key) => {
+    if (key.match(/^\d{4}-\d{2}$/)) {
+      const monthObj = result[key];
+      if (monthObj && typeof monthObj === 'object') {
+        const cleanedMonth: Record<string, IncomeStream[]> = {};
+        Object.keys(monthObj).forEach((memberId) => {
+          cleanedMonth[memberId] = cleanList(monthObj[memberId]);
+        });
+        result[key] = cleanedMonth;
+      }
+    } else if (Array.isArray(result[key])) {
+      result[key] = cleanList(result[key]);
+    }
+  });
+
+  return result;
+}
+
 export interface MonthlyIncomeResult {
   totalFixedIncome: number;
   totalValesIncome: number;
@@ -95,38 +143,55 @@ export function recoverIncomesFromTransactions(
       const nowKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
       const monthKey = tx.incomeMonthKey || (tx.date ? tx.date.substring(0, 7) : nowKey);
 
-      // Determine which member this income belongs to
-      let targetMember = femaleMember;
+      // Determine which member this income belongs to.
+      // IMPORTANT: trust the real paidByMemberId first (it's the ground truth
+      // set when the income was created). Only fall back to name-based guessing
+      // when it's missing, and NEVER default to a member when we can't tell —
+      // defaulting to Josy here was the root cause of income being silently
+      // duplicated under her whenever paidByMemberId didn't match exactly.
       const txPaidBy = (tx.paidByMemberId || '').toLowerCase();
       const txDesc = (tx.description || '').toLowerCase();
       const txNotes = (tx.notes || '').toLowerCase();
 
-      if (
-        txPaidBy === maleMember.id.toLowerCase() ||
-        txPaidBy.includes('thiago') ||
-        txPaidBy.includes('thyago') ||
-        txDesc.includes('thiago') ||
-        txDesc.includes('thyago') ||
-        txNotes.includes('thiago') ||
-        txNotes.includes('thyago')
-      ) {
-        targetMember = maleMember;
-      } else if (
-        txPaidBy === femaleMember.id.toLowerCase() ||
-        txPaidBy.includes('josy') ||
-        txPaidBy.includes('josefa') ||
-        txDesc.includes('josy') ||
-        txDesc.includes('josefa') ||
-        txNotes.includes('josy') ||
-        txNotes.includes('josefa')
-      ) {
-        targetMember = femaleMember;
-      } else if (tx.paidByMemberId) {
-        const found = members.find((m) => m.id === tx.paidByMemberId);
-        if (found) targetMember = found;
+      let targetMember: FamilyMember | undefined = members.find(
+        (m) => m.id.toLowerCase() === txPaidBy
+      );
+
+      if (!targetMember) {
+        if (
+          txDesc.includes('thiago') || txDesc.includes('thyago') ||
+          txNotes.includes('thiago') || txNotes.includes('thyago')
+        ) {
+          targetMember = maleMember;
+        } else if (
+          txDesc.includes('josy') || txDesc.includes('josefa') ||
+          txNotes.includes('josy') || txNotes.includes('josefa')
+        ) {
+          targetMember = femaleMember;
+        }
       }
 
+      // Could not confidently determine the owner — skip this transaction
+      // instead of guessing. Guessing is what created duplicate "phantom"
+      // income entries in the first place.
+      if (!targetMember) return;
+
       const memberId = targetMember.id;
+
+      // Safety net: if a stream tied to this exact transaction already exists
+      // under ANY member (not just the one we just resolved), don't create a
+      // second copy under a different member — just leave the existing one alone.
+      const streamIdForTx = tx.incomeStreamId || `rec_inc_${tx.id}`;
+      const alreadyTrackedElsewhere = members.some((m) => {
+        if (m.id === memberId) return false;
+        const monthList = result[monthKey]?.[m.id];
+        const rootList = result[m.id];
+        return (
+          (Array.isArray(monthList) && monthList.some((s: IncomeStream) => s.id === streamIdForTx)) ||
+          (Array.isArray(rootList) && rootList.some((s: IncomeStream) => s.id === streamIdForTx))
+        );
+      });
+      if (alreadyTrackedElsewhere) return;
 
       // Clean title
       let cleanName = tx.description
