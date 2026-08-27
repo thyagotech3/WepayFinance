@@ -1,5 +1,5 @@
-import { FamilyMember, IncomeStream } from '../types';
-import { db, doc, setDoc, sanitizeForFirestore } from '../lib/firebase';
+import { FamilyMember, IncomeStream, FixedExpenseItem, Transaction } from '../types';
+import { db, doc, getDoc, setDoc, sanitizeForFirestore } from '../lib/firebase';
 
 export interface MonthlyIncomeResult {
   totalFixedIncome: number;
@@ -7,6 +7,162 @@ export interface MonthlyIncomeResult {
   totalExtraIncome: number;
   totalFamilyIncome: number;
   memberTotals: Record<string, { fixed: number; vales: number; extra: number; total: number }>;
+}
+
+/**
+ * Merges two incomes maps without losing any member or month entries
+ */
+export function deepMergeIncomesMaps(
+  base: Record<string, any> = {},
+  incoming: Record<string, any> = {}
+): Record<string, any> {
+  const result: Record<string, any> = { ...base };
+
+  const mergeStreamArrays = (listA: IncomeStream[] = [], listB: IncomeStream[] = []): IncomeStream[] => {
+    const map = new Map<string, IncomeStream>();
+    (Array.isArray(listA) ? listA : []).forEach((item) => {
+      if (item && (item.id || item.name)) {
+        const key = item.id || `${item.name}-${item.dueDate || ''}`;
+        map.set(key, item);
+      }
+    });
+    (Array.isArray(listB) ? listB : []).forEach((item) => {
+      if (item && (item.id || item.name)) {
+        const key = item.id || `${item.name}-${item.dueDate || ''}`;
+        const existing = map.get(key);
+        if (existing) {
+          map.set(key, { ...existing, ...item });
+        } else {
+          map.set(key, item);
+        }
+      }
+    });
+    return Array.from(map.values());
+  };
+
+  const allKeys = new Set([...Object.keys(base || {}), ...Object.keys(incoming || {})]);
+
+  allKeys.forEach((key) => {
+    const valBase = base?.[key];
+    const valInc = incoming?.[key];
+
+    if (key.match(/^\d{4}-\d{2}$/)) {
+      // Month container: { [memberId]: IncomeStream[] }
+      const monthObjA = typeof valBase === 'object' && valBase !== null ? valBase : {};
+      const monthObjB = typeof valInc === 'object' && valInc !== null ? valInc : {};
+      const memberKeys = new Set([...Object.keys(monthObjA), ...Object.keys(monthObjB)]);
+      const mergedMonth: Record<string, IncomeStream[]> = {};
+      memberKeys.forEach((mKey) => {
+        mergedMonth[mKey] = mergeStreamArrays(monthObjA[mKey], monthObjB[mKey]);
+      });
+      result[key] = mergedMonth;
+    } else if (Array.isArray(valBase) || Array.isArray(valInc)) {
+      // Flat member stream list
+      result[key] = mergeStreamArrays(valBase, valInc);
+    } else if (typeof valBase === 'object' || typeof valInc === 'object') {
+      result[key] = { ...(valBase || {}), ...(valInc || {}) };
+    } else {
+      result[key] = valInc !== undefined ? valInc : valBase;
+    }
+  });
+
+  return result;
+}
+
+/**
+ * Reconstructs any missing fixed expenses from the transaction history
+ * (e.g. if another device temporarily overwrote the fixed expenses list)
+ */
+export function recoverFixedExpenses(
+  existingExpenses: FixedExpenseItem[] = [],
+  transactions: Transaction[] = [],
+  members: FamilyMember[] = []
+): FixedExpenseItem[] {
+  const map = new Map<string, FixedExpenseItem>();
+
+  // 1. Add all existing expenses
+  existingExpenses.forEach((fe) => {
+    if (fe && fe.id) {
+      map.set(fe.id, fe);
+    }
+  });
+
+  // 2. Scan transaction history to auto-recover any lost fixed expense
+  transactions.forEach((tx) => {
+    if (tx.status === 'deleted' || tx.status === 'reverted') return;
+
+    const isFixedTx =
+      tx.fixedExpenseId ||
+      tx.isRecurrent ||
+      (tx.notes && tx.notes.includes('Gasto Fixo')) ||
+      (tx.description && tx.description.toLowerCase().startsWith('[gasto fixo]'));
+
+    if (isFixedTx && tx.amount > 0) {
+      const targetId = tx.fixedExpenseId || `fe_recovered_${tx.id}`;
+      if (!map.has(targetId)) {
+        // Extract clean title
+        let cleanTitle = tx.description
+          .replace(/^\[gasto fixo\]\s*/i, '')
+          .replace(/\s*\([^)]*\)$/, '')
+          .trim();
+        if (!cleanTitle) cleanTitle = tx.description;
+
+        let dueDate = '10';
+        if (tx.notes) {
+          const matchDue = tx.notes.match(/Vencimento:\s*(?:Dia\s*)?(\d{1,2}|s\/[^\s|]+)/i);
+          if (matchDue && matchDue[1]) {
+            dueDate = matchDue[1];
+          }
+        }
+
+        const recovered: FixedExpenseItem = {
+          id: targetId,
+          title: cleanTitle,
+          amount: tx.amount,
+          category: tx.category || 'Moradia',
+          paidByMemberId: tx.paidByMemberId || (members[0]?.id || 'both'),
+          dueDate,
+          isPaid: true,
+          recurrenceType: 'fixed_amount',
+          monthKey: tx.date ? tx.date.substring(0, 7) : undefined,
+          notes: tx.notes || 'Gasto fixo sincronizado',
+        };
+        map.set(targetId, recovered);
+      }
+    }
+  });
+
+  return Array.from(map.values());
+}
+
+/**
+ * Deep merge fixed expenses from remote and local sources with auto-recovery
+ */
+export function deepMergeFixedExpenses(
+  listA: FixedExpenseItem[] = [],
+  listB: FixedExpenseItem[] = [],
+  transactions: Transaction[] = [],
+  members: FamilyMember[] = []
+): FixedExpenseItem[] {
+  const map = new Map<string, FixedExpenseItem>();
+
+  (Array.isArray(listA) ? listA : []).forEach((item) => {
+    if (item && item.id) map.set(item.id, item);
+  });
+
+  (Array.isArray(listB) ? listB : []).forEach((item) => {
+    if (item && item.id) {
+      const existing = map.get(item.id);
+      if (existing) {
+        map.set(item.id, { ...existing, ...item });
+      } else {
+        map.set(item.id, item);
+      }
+    }
+  });
+
+  const combined = Array.from(map.values());
+  return recoverFixedExpenses(combined, transactions, members);
 }
 
 /**
@@ -27,21 +183,42 @@ export async function syncIncomesMapToFirestore(groupId?: string, customMap?: Re
   if (!targetGroupId) return;
 
   try {
-    let mapToSync = customMap;
-    if (!mapToSync && typeof window !== 'undefined') {
+    let localMap = customMap;
+    if (!localMap && typeof window !== 'undefined') {
       const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
       if (saved) {
-        mapToSync = JSON.parse(saved);
+        localMap = JSON.parse(saved);
       }
     }
 
-    if (mapToSync) {
-      await setDoc(
-        doc(db, 'incomes', targetGroupId),
-        sanitizeForFirestore({ incomesMap: mapToSync, groupId: targetGroupId, updatedAt: new Date().toISOString() }),
-        { merge: true }
-      );
+    // Read current remote data first to merge both partners' incomes without overwriting
+    let remoteMap: Record<string, any> = {};
+    try {
+      const docSnap = await getDoc(doc(db, 'incomes', targetGroupId));
+      if (docSnap.exists() && docSnap.data().incomesMap) {
+        remoteMap = docSnap.data().incomesMap;
+      }
+    } catch (fetchErr) {
+      console.warn('Incomes remote read check notice:', fetchErr);
     }
+
+    const merged = deepMergeIncomesMaps(remoteMap, localMap || {});
+
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(merged));
+      localStorage.setItem('wepay_monthly_incomes', JSON.stringify(merged));
+      window.dispatchEvent(new Event('wepay_incomes_updated'));
+    }
+
+    await setDoc(
+      doc(db, 'incomes', targetGroupId),
+      sanitizeForFirestore({
+        incomesMap: merged,
+        groupId: targetGroupId,
+        updatedAt: new Date().toISOString(),
+      }),
+      { merge: true }
+    );
   } catch (err) {
     console.warn('Firestore incomes sync notice:', err);
   }

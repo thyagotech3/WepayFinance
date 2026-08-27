@@ -31,7 +31,15 @@ import { SettingsModal } from './components/SettingsModal';
 import { SettingsView } from './components/SettingsView';
 import { BottomDock } from './components/BottomDock';
 import { db, doc, setDoc, getDoc, collection, onSnapshot, query, where, getDocs, auth, onAuthStateChanged, sanitizeForFirestore, FirebaseUser } from './lib/firebase';
-import { saveIncomeStreamToStorage, deleteIncomeStreamFromStorage, getStreamAmount, syncIncomesMapToFirestore } from './utils/incomeUtils';
+import {
+  saveIncomeStreamToStorage,
+  deleteIncomeStreamFromStorage,
+  getStreamAmount,
+  syncIncomesMapToFirestore,
+  deepMergeIncomesMaps,
+  deepMergeFixedExpenses,
+  recoverFixedExpenses,
+} from './utils/incomeUtils';
 
 export default function App() {
   const now = new Date();
@@ -181,9 +189,16 @@ export default function App() {
     // Immediate initial fetch to prevent blank/stale state across devices
     getDoc(doc(db, 'incomes', group.id)).then((docSnap) => {
       if (docSnap.exists() && docSnap.data().incomesMap) {
-        const map = docSnap.data().incomesMap;
-        localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(map));
-        localStorage.setItem('wepay_monthly_incomes', JSON.stringify(map));
+        const remoteMap = docSnap.data().incomesMap;
+        let currentLocal: Record<string, any> = {};
+        try {
+          const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
+          if (saved) currentLocal = JSON.parse(saved);
+        } catch (e) {}
+
+        const merged = deepMergeIncomesMaps(currentLocal, remoteMap);
+        localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(merged));
+        localStorage.setItem('wepay_monthly_incomes', JSON.stringify(merged));
         window.dispatchEvent(new Event('wepay_incomes_updated'));
       }
     }).catch((e) => console.warn('Initial income fetch note:', e));
@@ -194,6 +209,18 @@ export default function App() {
         setGroup((prev) => (prev ? { ...prev, ...remoteGroup } : remoteGroup));
       }
     }).catch((e) => console.warn('Initial group fetch note:', e));
+
+    getDoc(doc(db, 'fixedExpenses', group.id)).then((docSnap) => {
+      if (docSnap.exists() && docSnap.data().items) {
+        const remoteItems = docSnap.data().items as FixedExpenseItem[];
+        setFixedExpenses((prev) => {
+          const merged = deepMergeFixedExpenses(prev, remoteItems, transactions, group.members);
+          localStorage.setItem('wepay_fixed_expenses', JSON.stringify(merged));
+          window.dispatchEvent(new Event('wepay_fixed_expenses_updated'));
+          return merged;
+        });
+      }
+    }).catch((e) => console.warn('Initial fixed expenses fetch note:', e));
 
     // 1. Group listener
     const groupUnsub = onSnapshot(
@@ -220,6 +247,17 @@ export default function App() {
         });
         remoteTxs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
         setTransactions(remoteTxs);
+
+        // Auto-heal any fixed expenses that might have been missing
+        setFixedExpenses((prev) => {
+          const recovered = recoverFixedExpenses(prev, remoteTxs, group.members);
+          if (recovered.length !== prev.length) {
+            localStorage.setItem('wepay_fixed_expenses', JSON.stringify(recovered));
+            window.dispatchEvent(new Event('wepay_fixed_expenses_updated'));
+            return recovered;
+          }
+          return prev;
+        });
       },
       (err) => {
         console.warn('Firestore live transaction listener info:', err);
@@ -231,7 +269,13 @@ export default function App() {
       doc(db, 'fixedExpenses', group.id),
       (docSnap) => {
         if (docSnap.exists() && docSnap.data().items) {
-          setFixedExpenses(docSnap.data().items as FixedExpenseItem[]);
+          const remoteItems = docSnap.data().items as FixedExpenseItem[];
+          setFixedExpenses((prev) => {
+            const merged = deepMergeFixedExpenses(prev, remoteItems, transactions, group.members);
+            localStorage.setItem('wepay_fixed_expenses', JSON.stringify(merged));
+            return merged;
+          });
+          window.dispatchEvent(new Event('wepay_fixed_expenses_updated'));
         }
       },
       (err) => {
@@ -257,9 +301,16 @@ export default function App() {
       doc(db, 'incomes', group.id),
       (docSnap) => {
         if (docSnap.exists() && docSnap.data().incomesMap) {
-          const map = docSnap.data().incomesMap;
-          localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(map));
-          localStorage.setItem('wepay_monthly_incomes', JSON.stringify(map));
+          const remoteMap = docSnap.data().incomesMap;
+          let currentLocal: Record<string, any> = {};
+          try {
+            const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
+            if (saved) currentLocal = JSON.parse(saved);
+          } catch (e) {}
+
+          const merged = deepMergeIncomesMaps(currentLocal, remoteMap);
+          localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(merged));
+          localStorage.setItem('wepay_monthly_incomes', JSON.stringify(merged));
           window.dispatchEvent(new Event('wepay_incomes_updated'));
         }
       },
@@ -307,7 +358,16 @@ export default function App() {
   const syncFixedExpensesToFirestore = async (items: FixedExpenseItem[]) => {
     if (!group?.id) return;
     try {
-      await setDoc(doc(db, 'fixedExpenses', group.id), sanitizeForFirestore({ items, groupId: group.id }));
+      let remoteItems: FixedExpenseItem[] = [];
+      try {
+        const snap = await getDoc(doc(db, 'fixedExpenses', group.id));
+        if (snap.exists() && snap.data().items) {
+          remoteItems = snap.data().items;
+        }
+      } catch (e) {}
+
+      const merged = deepMergeFixedExpenses(remoteItems, items, transactions, group.members);
+      await setDoc(doc(db, 'fixedExpenses', group.id), sanitizeForFirestore({ items: merged, groupId: group.id }), { merge: true });
     } catch (e) {
       console.warn('Firestore fixed expenses sync note:', e);
     }
@@ -334,14 +394,7 @@ export default function App() {
       setFixedExpenses(INITIAL_FIXED_EXPENSES);
       setPiggyBanks(INITIAL_PIGGY_BANKS);
     } else {
-      setTransactions([]);
-      setFixedExpenses([]);
-      setPiggyBanks([]);
-      localStorage.removeItem('wepay_transactions');
-      localStorage.removeItem('wepay_fixed_expenses');
-      localStorage.removeItem('wepay_cofrinhos');
-      localStorage.removeItem('wepay_couple_incomes_v3');
-      localStorage.removeItem('wepay_monthly_incomes');
+      // Non-destructive login: sync group and let Firestore listeners merge data
       syncGroupToFirestore(newGroup);
     }
   };

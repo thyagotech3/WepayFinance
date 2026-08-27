@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { FamilyMember, FixedExpenseItem, Transaction } from '../types';
 import {
   FixedExpenseModal,
@@ -74,7 +74,7 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
   const STORAGE_KEY = 'wepay_fixed_expenses';
 
   const [localExpenses, setLocalExpenses] = useState<FixedExpenseItem[]>(() => {
-    if (propExpenses) return propExpenses;
+    if (propExpenses && propExpenses.length > 0) return propExpenses;
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
@@ -86,11 +86,38 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
     return [];
   });
 
-  const expenses = propExpenses || localExpenses;
+  useEffect(() => {
+    if (propExpenses) {
+      setLocalExpenses(propExpenses);
+    }
+  }, [propExpenses]);
+
+  useEffect(() => {
+    const handleReload = () => {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            setLocalExpenses(parsed);
+          }
+        } catch (e) {}
+      }
+    };
+    window.addEventListener('wepay_fixed_expenses_updated', handleReload);
+    window.addEventListener('storage', handleReload);
+    return () => {
+      window.removeEventListener('wepay_fixed_expenses_updated', handleReload);
+      window.removeEventListener('storage', handleReload);
+    };
+  }, []);
+
+  const expenses = propExpenses && propExpenses.length > 0 ? propExpenses : localExpenses;
 
   const updateExpensesList = (newItems: FixedExpenseItem[]) => {
     setLocalExpenses(newItems);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(newItems));
+    window.dispatchEvent(new Event('wepay_fixed_expenses_updated'));
     if (onUpdateExpenses) {
       onUpdateExpenses(newItems);
     }

@@ -94,7 +94,8 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       } catch (e) {}
     }
-    return INITIAL_FIXED_EXPENSES;
+    const isDemo = typeof window !== 'undefined' && localStorage.getItem('wepay_is_demo') === 'true';
+    return isDemo ? INITIAL_FIXED_EXPENSES : (propFixedExpenses || []);
   }, [propFixedExpenses, incomesVersion]);
 
   const totalFixedPaid = useMemo(() => {

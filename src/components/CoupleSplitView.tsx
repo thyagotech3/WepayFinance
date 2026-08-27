@@ -355,9 +355,38 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
     } else if (incomesMap?.[memberId] && Array.isArray(incomesMap[memberId])) {
       rawList = incomesMap[memberId];
     } else {
-      const isDemo = localStorage.getItem('wepay_is_demo') === 'true';
-      if (isDemo) {
-        rawList = index === 0 ? DEFAULT_THIAGO_INCOMES : DEFAULT_MARIANA_INCOMES;
+      // Flexible match by name if ID was dynamically generated
+      const monthObj = (incomesMap && incomesMap[month]) || {};
+      const candidateKeys = Array.from(new Set([...Object.keys(monthObj), ...Object.keys(incomesMap || {})])).filter(
+        (k) => !k.match(/^\d{4}-\d{2}$/)
+      );
+      const memberName = members[index]?.name || '';
+      for (const k of candidateKeys) {
+        if (
+          (memberName && k.toLowerCase().includes(memberName.toLowerCase().trim())) ||
+          (memberName.toLowerCase().includes('josy') && k.toLowerCase().includes('josy')) ||
+          (memberName.toLowerCase().includes('thiago') && (k.toLowerCase().includes('thiago') || k.toLowerCase().includes('thyago')))
+        ) {
+          rawList = monthObj[k] || (incomesMap && incomesMap[k]) || [];
+          if (rawList.length > 0) break;
+        }
+      }
+
+      if (rawList.length === 0) {
+        const isDemo = localStorage.getItem('wepay_is_demo') === 'true';
+        if (isDemo) {
+          rawList = index === 0 ? DEFAULT_THIAGO_INCOMES : DEFAULT_MARIANA_INCOMES;
+        } else if (members[index]?.income && (members[index]?.income || 0) > 0) {
+          rawList = [
+            {
+              id: `main-${memberId}`,
+              name: 'Salário / Renda Principal',
+              amount: members[index].income || 0,
+              nature: 'fixed',
+              isMain: true,
+            },
+          ];
+        }
       }
     }
 
