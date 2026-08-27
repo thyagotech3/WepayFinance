@@ -39,6 +39,7 @@ import {
   deepMergeIncomesMaps,
   deepMergeFixedExpenses,
   recoverFixedExpenses,
+  recoverIncomesFromTransactions,
 } from './utils/incomeUtils';
 
 export default function App() {
@@ -258,6 +259,18 @@ export default function App() {
           }
           return prev;
         });
+
+        // Auto-heal any incomes that were logged as transactions
+        try {
+          const savedIncomes = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
+          const currentMap = savedIncomes ? JSON.parse(savedIncomes) : {};
+          const recoveredIncomes = recoverIncomesFromTransactions(currentMap, remoteTxs, group.members);
+          localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(recoveredIncomes));
+          localStorage.setItem('wepay_monthly_incomes', JSON.stringify(recoveredIncomes));
+          window.dispatchEvent(new Event('wepay_incomes_updated'));
+        } catch (e) {
+          console.warn('Income auto-heal note:', e);
+        }
       },
       (err) => {
         console.warn('Firestore live transaction listener info:', err);

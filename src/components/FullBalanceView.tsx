@@ -78,8 +78,8 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
 
   // Incomes for the selected month
   const incomeData = useMemo(
-    () => getMonthlyIncomeData(selectedMonthKey, members),
-    [selectedMonthKey, members, incomesVersion]
+    () => getMonthlyIncomeData(selectedMonthKey, members, transactions),
+    [selectedMonthKey, members, transactions, incomesVersion]
   );
 
   const totalFamilyIncome = incomeData.totalFamilyIncome;

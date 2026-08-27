@@ -3,7 +3,14 @@ import { FamilyGroup, FamilyMember, Transaction, IncomeStream, IncomeHistoryEntr
 import { AddIncomeModal } from './AddIncomeModal';
 import { MemberIncomeDetailView } from './MemberIncomeDetailView';
 import { FamilyIncomeOverviewModal } from './FamilyIncomeOverviewModal';
-import { getStreamAmount, formatMemberName, deleteIncomeStreamFromStorage, saveIncomeStreamToStorage, syncIncomesMapToFirestore } from '../utils/incomeUtils';
+import {
+  getStreamAmount,
+  formatMemberName,
+  deleteIncomeStreamFromStorage,
+  saveIncomeStreamToStorage,
+  syncIncomesMapToFirestore,
+  recoverIncomesFromTransactions,
+} from '../utils/incomeUtils';
 import {
   ChevronDown,
   ChevronUp,
@@ -349,25 +356,38 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
 
   const getMemberIncomes = (memberId: string, index: number, targetMonthKey?: string): IncomeStream[] => {
     const month = targetMonthKey || selectedMonthKey;
+
+    // Merge transactions into effective map if available
+    let effectiveMap = incomesMap;
+    if (transactions && transactions.length > 0) {
+      effectiveMap = recoverIncomesFromTransactions(incomesMap, transactions, members);
+    }
+
     let rawList: IncomeStream[] = [];
-    if (incomesMap?.[month]?.[memberId] && Array.isArray(incomesMap[month][memberId])) {
-      rawList = incomesMap[month][memberId];
-    } else if (incomesMap?.[memberId] && Array.isArray(incomesMap[memberId])) {
-      rawList = incomesMap[memberId];
+    if (effectiveMap?.[month]?.[memberId] && Array.isArray(effectiveMap[month][memberId]) && effectiveMap[month][memberId].length > 0) {
+      rawList = effectiveMap[month][memberId];
+    } else if (effectiveMap?.[memberId] && Array.isArray(effectiveMap[memberId]) && effectiveMap[memberId].length > 0) {
+      rawList = effectiveMap[memberId];
     } else {
       // Flexible match by name if ID was dynamically generated
-      const monthObj = (incomesMap && incomesMap[month]) || {};
-      const candidateKeys = Array.from(new Set([...Object.keys(monthObj), ...Object.keys(incomesMap || {})])).filter(
+      const monthObj = (effectiveMap && effectiveMap[month]) || {};
+      const candidateKeys = Array.from(new Set([...Object.keys(monthObj), ...Object.keys(effectiveMap || {})])).filter(
         (k) => !k.match(/^\d{4}-\d{2}$/)
       );
       const memberName = members[index]?.name || '';
       for (const k of candidateKeys) {
+        const kLow = k.toLowerCase().trim();
+        const memLow = memberName.toLowerCase().trim();
         if (
-          (memberName && k.toLowerCase().includes(memberName.toLowerCase().trim())) ||
-          (memberName.toLowerCase().includes('josy') && k.toLowerCase().includes('josy')) ||
-          (memberName.toLowerCase().includes('thiago') && (k.toLowerCase().includes('thiago') || k.toLowerCase().includes('thyago')))
+          (memLow && kLow.includes(memLow)) ||
+          (memLow.includes('josy') && kLow.includes('josy')) ||
+          (memLow.includes('josefa') && (kLow.includes('josefa') || kLow.includes('josy'))) ||
+          (memLow.includes('thiago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
+          (memLow.includes('thyago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
+          (index === 1 && (kLow.includes('m2') || kLow.includes('mariana') || kLow.includes('mulher') || kLow.includes('josy'))) ||
+          (index === 0 && (kLow.includes('m1') || kLow.includes('thiago') || kLow.includes('homem')))
         ) {
-          rawList = monthObj[k] || (incomesMap && incomesMap[k]) || [];
+          rawList = monthObj[k] || (effectiveMap && effectiveMap[k]) || [];
           if (rawList.length > 0) break;
         }
       }

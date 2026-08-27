@@ -111,8 +111,8 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
 
   // Incomes & Remuneração do mês selecionado (soma real dos membros)
   const incomeData = useMemo(
-    () => getMonthlyIncomeData(selectedMonthKey, members),
-    [selectedMonthKey, members, incomesVersion]
+    () => getMonthlyIncomeData(selectedMonthKey, members, transactions),
+    [selectedMonthKey, members, transactions, incomesVersion]
   );
 
   const fixedIncome = incomeData.totalFixedIncome;

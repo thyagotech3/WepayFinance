@@ -69,6 +69,137 @@ export function deepMergeIncomesMaps(
   return result;
 }
 
+export function recoverIncomesFromTransactions(
+  incomesMap: Record<string, any> = {},
+  transactions: Transaction[] = [],
+  members: FamilyMember[] = []
+): Record<string, any> {
+  const result: Record<string, any> = { ...(incomesMap || {}) };
+
+  const maleMember = members[0] || { id: 'm1', name: 'Thiago' };
+  const femaleMember = members[1] || { id: 'm2', name: 'Josy' };
+
+  transactions.forEach((tx) => {
+    if (tx.status === 'deleted' || tx.status === 'reverted') return;
+
+    // Check if this transaction represents an income
+    const isIncomeTx =
+      tx.type === 'income' ||
+      tx.incomeStreamId ||
+      tx.category === 'Serviços' ||
+      tx.category === 'Salário' ||
+      tx.category === 'Renda Extra' ||
+      (tx.description && tx.description.toLowerCase().includes('[renda]'));
+
+    if (isIncomeTx && tx.amount > 0) {
+      const nowKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+      const monthKey = tx.incomeMonthKey || (tx.date ? tx.date.substring(0, 7) : nowKey);
+
+      // Determine which member this income belongs to
+      let targetMember = femaleMember;
+      const txPaidBy = (tx.paidByMemberId || '').toLowerCase();
+      const txDesc = (tx.description || '').toLowerCase();
+      const txNotes = (tx.notes || '').toLowerCase();
+
+      if (
+        txPaidBy === maleMember.id.toLowerCase() ||
+        txPaidBy.includes('thiago') ||
+        txPaidBy.includes('thyago') ||
+        txDesc.includes('thiago') ||
+        txDesc.includes('thyago') ||
+        txNotes.includes('thiago') ||
+        txNotes.includes('thyago')
+      ) {
+        targetMember = maleMember;
+      } else if (
+        txPaidBy === femaleMember.id.toLowerCase() ||
+        txPaidBy.includes('josy') ||
+        txPaidBy.includes('josefa') ||
+        txDesc.includes('josy') ||
+        txDesc.includes('josefa') ||
+        txNotes.includes('josy') ||
+        txNotes.includes('josefa')
+      ) {
+        targetMember = femaleMember;
+      } else if (tx.paidByMemberId) {
+        const found = members.find((m) => m.id === tx.paidByMemberId);
+        if (found) targetMember = found;
+      }
+
+      const memberId = targetMember.id;
+
+      // Clean title
+      let cleanName = tx.description
+        .replace(/^\[renda\]\s*/i, '')
+        .replace(/\s*-\s*Recebimento.*$/i, '')
+        .replace(/\s*\([^)]*\)$/, '')
+        .trim();
+      if (!cleanName) cleanName = 'Renda';
+
+      let nature: 'fixed' | 'vales' | 'extra' = 'fixed';
+      if (
+        cleanName.toLowerCase().includes('vale') ||
+        cleanName.toLowerCase().includes('refeição') ||
+        cleanName.toLowerCase().includes('alimentação')
+      ) {
+        nature = 'vales';
+      } else if (
+        cleanName.toLowerCase().includes('extra') ||
+        cleanName.toLowerCase().includes('freela') ||
+        cleanName.toLowerCase().includes('consult') ||
+        cleanName.toLowerCase().includes('bico') ||
+        cleanName.toLowerCase().includes('serviço')
+      ) {
+        nature = 'extra';
+      }
+
+      const streamId = tx.incomeStreamId || `rec_inc_${tx.id}`;
+
+      // Ensure month container exists
+      if (!result[monthKey]) result[monthKey] = {};
+      const currentMonthList: IncomeStream[] = Array.isArray(result[monthKey][memberId]) ? [...result[monthKey][memberId]] : [];
+      const currentRootList: IncomeStream[] = Array.isArray(result[memberId]) ? [...result[memberId]] : [];
+
+      const existingIndex = currentMonthList.findIndex(
+        (s) => s.id === streamId || (s.name.trim().toLowerCase() === cleanName.trim().toLowerCase() && Math.abs((s.amount || 0) - tx.amount) < 0.01)
+      );
+
+      const recoveredStream: IncomeStream = {
+        id: streamId,
+        name: cleanName,
+        amount: tx.amount,
+        targetGoal: tx.amount,
+        nature,
+        dueDate: '10',
+        isRecurrent: true,
+        received: true,
+        receivedDate: tx.date,
+        notes: tx.notes || 'Renda sincronizada do histórico',
+      };
+
+      if (existingIndex >= 0) {
+        currentMonthList[existingIndex] = {
+          ...currentMonthList[existingIndex],
+          amount: Math.max(currentMonthList[existingIndex].amount || 0, tx.amount),
+          received: true,
+          receivedDate: tx.date || currentMonthList[existingIndex].receivedDate,
+        };
+      } else {
+        currentMonthList.push(recoveredStream);
+      }
+
+      result[monthKey][memberId] = currentMonthList;
+
+      // Also ensure in root list if not present
+      if (!currentRootList.some((s) => s.id === streamId || s.name.trim().toLowerCase() === cleanName.trim().toLowerCase())) {
+        result[memberId] = [...currentRootList, recoveredStream];
+      }
+    }
+  });
+
+  return result;
+}
+
 /**
  * Reconstructs any missing fixed expenses from the transaction history
  * (e.g. if another device temporarily overwrote the fixed expenses list)
@@ -598,7 +729,8 @@ export function deleteIncomeStreamFromStorage(
 
 export function getMonthlyIncomeData(
   monthKey: string,
-  members: FamilyMember[]
+  members: FamilyMember[],
+  transactions?: Transaction[]
 ): MonthlyIncomeResult {
   let incomesMap: any = {};
   let monthlyIncomesMap: any = {};
@@ -613,6 +745,19 @@ export function getMonthlyIncomeData(
     console.error('Error reading incomes from localStorage:', e);
   }
 
+  // If transactions exist or are stored, auto-merge any income transactions into the map
+  const activeTxs = transactions || (() => {
+    try {
+      const savedTxs = localStorage.getItem('wepay_transactions');
+      if (savedTxs) return JSON.parse(savedTxs);
+    } catch (e) {}
+    return [];
+  })();
+
+  if (Array.isArray(activeTxs) && activeTxs.length > 0) {
+    incomesMap = recoverIncomesFromTransactions(incomesMap, activeTxs, members);
+  }
+
   const monthData = incomesMap[monthKey] || monthlyIncomesMap[monthKey] || {};
 
   let totalFixedIncome = 0;
@@ -620,18 +765,45 @@ export function getMonthlyIncomeData(
   let totalExtraIncome = 0;
   const memberTotals: Record<string, { fixed: number; vales: number; extra: number; total: number }> = {};
 
-  members.forEach((member) => {
+  members.forEach((member, idx) => {
     let streams: IncomeStream[] | undefined = undefined;
 
-    if (monthData[member.id] && Array.isArray(monthData[member.id])) {
+    if (monthData[member.id] && Array.isArray(monthData[member.id]) && monthData[member.id].length > 0) {
       streams = monthData[member.id];
-    } else if (incomesMap[member.id] && Array.isArray(incomesMap[member.id])) {
+    } else if (incomesMap[member.id] && Array.isArray(incomesMap[member.id]) && incomesMap[member.id].length > 0) {
       streams = incomesMap[member.id];
-    } else if (monthlyIncomesMap[member.id] && Array.isArray(monthlyIncomesMap[member.id])) {
+    } else if (monthlyIncomesMap[member.id] && Array.isArray(monthlyIncomesMap[member.id]) && monthlyIncomesMap[member.id].length > 0) {
       streams = monthlyIncomesMap[member.id];
     }
 
-    if (streams === undefined) {
+    if (!streams || streams.length === 0) {
+      // Flexible search in monthData and incomesMap by candidate keys
+      const candidateKeys = Array.from(
+        new Set([...Object.keys(monthData || {}), ...Object.keys(incomesMap || {}), ...Object.keys(monthlyIncomesMap || {})])
+      ).filter((k) => !k.match(/^\d{4}-\d{2}$/));
+
+      const memName = (member.name || '').toLowerCase().trim();
+      for (const k of candidateKeys) {
+        const kLow = k.toLowerCase().trim();
+        if (
+          (memName && kLow.includes(memName)) ||
+          (memName.includes('josy') && kLow.includes('josy')) ||
+          (memName.includes('josefa') && (kLow.includes('josefa') || kLow.includes('josy'))) ||
+          (memName.includes('thiago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
+          (memName.includes('thyago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
+          (idx === 1 && (kLow.includes('m2') || kLow.includes('mariana') || kLow.includes('mulher') || kLow.includes('josy'))) ||
+          (idx === 0 && (kLow.includes('m1') || kLow.includes('thiago') || kLow.includes('homem')))
+        ) {
+          const found = monthData[k] || incomesMap[k] || monthlyIncomesMap[k];
+          if (Array.isArray(found) && found.length > 0) {
+            streams = found;
+            break;
+          }
+        }
+      }
+    }
+
+    if (streams === undefined || streams.length === 0) {
       const isDemo = typeof window !== 'undefined' && localStorage.getItem('wepay_is_demo') === 'true';
       if (member.income && member.income > 0) {
         streams = [

@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import { FamilyMember, IncomeStream, IncomeNature, Transaction, IncomeHistoryEntry } from '../types';
 import { formatIncomeDueDate } from './CoupleSplitView';
-import { getStreamAmount, formatMemberName } from '../utils/incomeUtils';
+import { getStreamAmount, formatMemberName, recoverIncomesFromTransactions } from '../utils/incomeUtils';
 
 interface MemberIncomeDetailViewProps {
   member: FamilyMember;
@@ -118,20 +118,52 @@ export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
   const activeStreamsForMonth = useMemo(() => {
     try {
       const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
-      if (saved) {
-        const map = JSON.parse(saved);
-        if (map?.[detailMonthKey]?.[member.id] && Array.isArray(map[detailMonthKey][member.id])) {
-          return map[detailMonthKey][member.id];
+      let map = saved ? JSON.parse(saved) : {};
+
+      try {
+        const savedTxs = localStorage.getItem('wepay_transactions');
+        if (savedTxs) {
+          const parsedTxs = JSON.parse(savedTxs);
+          if (Array.isArray(parsedTxs) && parsedTxs.length > 0) {
+            map = recoverIncomesFromTransactions(map, parsedTxs, [member]);
+          }
         }
-        if (map?.[member.id] && Array.isArray(map[member.id])) {
-          return map[member.id];
+      } catch (e) {}
+
+      if (map?.[detailMonthKey]?.[member.id] && Array.isArray(map[detailMonthKey][member.id]) && map[detailMonthKey][member.id].length > 0) {
+        return map[detailMonthKey][member.id];
+      }
+      if (map?.[member.id] && Array.isArray(map[member.id]) && map[member.id].length > 0) {
+        return map[member.id];
+      }
+
+      // Candidate search by name or common keys
+      const monthObj = map?.[detailMonthKey] || {};
+      const candidateKeys = Array.from(new Set([...Object.keys(monthObj), ...Object.keys(map || {})])).filter(
+        (k) => !k.match(/^\d{4}-\d{2}$/)
+      );
+      const memName = (member?.name || '').toLowerCase().trim();
+      for (const k of candidateKeys) {
+        const kLow = k.toLowerCase().trim();
+        if (
+          (memName && kLow.includes(memName)) ||
+          (memName.includes('josy') && kLow.includes('josy')) ||
+          (memName.includes('josefa') && (kLow.includes('josefa') || kLow.includes('josy'))) ||
+          (memName.includes('thiago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
+          (memName.includes('thyago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
+          (kLow.includes('m2') && memName.includes('josy'))
+        ) {
+          const found = monthObj[k] || map[k];
+          if (Array.isArray(found) && found.length > 0) {
+            return found;
+          }
         }
       }
     } catch (e) {
       console.error(e);
     }
     return streams;
-  }, [detailMonthKey, member.id, streams, incomesVersion]);
+  }, [detailMonthKey, member.id, member.name, streams, incomesVersion]);
 
   // Ensure unique streams to prevent duplicate keys and duplicate metrics
   const uniqueStreams = useMemo(() => {
