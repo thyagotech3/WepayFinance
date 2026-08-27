@@ -9,6 +9,7 @@ import {
   signInWithPopup,
   signInWithCredential,
   sendPasswordResetEmail,
+  signInAnonymously,
   User as FirebaseUser,
 } from 'firebase/auth';
 import {
@@ -62,6 +63,7 @@ export {
   signInWithPopup,
   signInWithCredential,
   sendPasswordResetEmail,
+  signInAnonymously,
   GoogleAuthProvider,
   doc,
   setDoc,

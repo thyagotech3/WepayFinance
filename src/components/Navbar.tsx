@@ -17,7 +17,6 @@ interface NavbarProps {
   onOpenIncome?: () => void;
   onOpenFixedExpenses?: () => void;
   onOpenCofrinhos?: () => void;
-  onOpenMercado?: () => void;
   onSwitchMember: (memberId: string) => void;
   onOpenSettings: () => void;
   onLogout: () => void;
@@ -34,7 +33,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenIncome,
   onOpenFixedExpenses,
   onOpenCofrinhos,
-  onOpenMercado,
   onSwitchMember,
   onOpenSettings,
   onLogout,
@@ -171,7 +169,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Right Side: Quick Action Buttons & Account (Uniform h-9 alignment) */}
           <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
             
-            {/* Desktop 3 Action Buttons (Novo Gasto, Despesas Fixas, Arrecadação) */}
+            {/* Desktop Action Buttons (Novo Gasto, Despesas Fixas, Arrecadação) */}
             <div className="hidden md:flex items-center gap-1.5 lg:gap-2">
               {onOpenExpense && (
                 <button
@@ -182,18 +180,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                 >
                   <Wallet className="w-3.5 h-3.5" />
                   <span>Novo Gasto</span>
-                </button>
-              )}
-
-              {onOpenMercado && (
-                <button
-                  type="button"
-                  onClick={onOpenMercado}
-                  className="h-9 flex items-center gap-1.5 px-3.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-extrabold rounded-xl shadow-md shadow-emerald-900/30 transition-all cursor-pointer active:scale-95 shrink-0"
-                  title="Lançar Compra de Mercado / Cupom Fiscal com IA"
-                >
-                  <ShoppingCart className="w-3.5 h-3.5" />
-                  <span>Mercado</span>
                 </button>
               )}
 

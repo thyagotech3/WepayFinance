@@ -1048,6 +1048,8 @@ export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
 
                                   if (onAddTransaction) {
                                     onAddTransaction({
+                                      incomeStreamId: actionModalStream.id,
+                                      incomeMonthKey: detailMonthKey,
                                       description: noteText ? `${actionModalStream.name} - ${noteText}` : actionModalStream.name,
                                       amount: added,
                                       category: 'Serviços',

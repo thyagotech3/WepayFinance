@@ -1,4 +1,5 @@
 import { FamilyMember, IncomeStream } from '../types';
+import { db, doc, setDoc, sanitizeForFirestore } from '../lib/firebase';
 
 export interface MonthlyIncomeResult {
   totalFixedIncome: number;
@@ -6,6 +7,44 @@ export interface MonthlyIncomeResult {
   totalExtraIncome: number;
   totalFamilyIncome: number;
   memberTotals: Record<string, { fixed: number; vales: number; extra: number; total: number }>;
+}
+
+/**
+ * Synchronizes the entire incomes map to Firestore under the doc /incomes/{groupId}
+ */
+export async function syncIncomesMapToFirestore(groupId?: string, customMap?: Record<string, any>) {
+  let targetGroupId = groupId;
+  if (!targetGroupId && typeof window !== 'undefined') {
+    try {
+      const savedGroup = localStorage.getItem('wepay_group');
+      if (savedGroup) {
+        const parsed = JSON.parse(savedGroup);
+        if (parsed?.id) targetGroupId = parsed.id;
+      }
+    } catch (e) {}
+  }
+
+  if (!targetGroupId) return;
+
+  try {
+    let mapToSync = customMap;
+    if (!mapToSync && typeof window !== 'undefined') {
+      const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
+      if (saved) {
+        mapToSync = JSON.parse(saved);
+      }
+    }
+
+    if (mapToSync) {
+      await setDoc(
+        doc(db, 'incomes', targetGroupId),
+        sanitizeForFirestore({ incomesMap: mapToSync, groupId: targetGroupId, updatedAt: new Date().toISOString() }),
+        { merge: true }
+      );
+    }
+  } catch (err) {
+    console.warn('Firestore incomes sync notice:', err);
+  }
 }
 
 export function getBrazilianHolidays(year: number): Set<string> {
@@ -300,6 +339,7 @@ export function saveIncomeStreamToStorage(
     localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(updatedMap));
     localStorage.setItem('wepay_monthly_incomes', JSON.stringify(updatedMap));
     window.dispatchEvent(new Event('wepay_incomes_updated'));
+    syncIncomesMapToFirestore(groupId, updatedMap);
   } catch (e) {
     console.error('Error saving incomes map:', e);
   }
@@ -311,7 +351,8 @@ export function deleteIncomeStreamFromStorage(
   memberId: string,
   streamId: string,
   monthKey: string = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
-  applyToAllMonths: boolean = false
+  applyToAllMonths: boolean = false,
+  groupId?: string
 ): void {
   let incomesMap: Record<string, any> = {};
   try {
@@ -372,6 +413,7 @@ export function deleteIncomeStreamFromStorage(
     localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(updatedMap));
     localStorage.setItem('wepay_monthly_incomes', JSON.stringify(updatedMap));
     window.dispatchEvent(new Event('wepay_incomes_updated'));
+    syncIncomesMapToFirestore(groupId, updatedMap);
   } catch (e) {
     console.error('Error saving incomes map after deletion:', e);
   }

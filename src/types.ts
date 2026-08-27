@@ -86,29 +86,6 @@ export interface FamilyGroup {
   createdAt: string;
 }
 
-export interface ReceiptItem {
-  id: string;
-  name: string;
-  quantity: number;
-  unitPrice: number;
-  totalPrice: number;
-  category?: string; // Hortifrúti, Carnes & Aves, Laticínios & Queijos, Mercearia, Bebidas, Padaria, Limpeza, Higiene, Congelados, Pet, Outros
-  hasCalculationMismatch?: boolean;
-  mismatchNote?: string;
-}
-
-export interface MercadoDetails {
-  storeName: string;
-  purchaseDate: string; // YYYY-MM-DD
-  totalAmount: number;
-  paymentMethod?: string;
-  items: ReceiptItem[];
-  receiptImageUrl?: string;
-  notes?: string;
-  receiptTotalPrinted?: number;
-  isAuditConsistent?: boolean;
-}
-
 export interface Transaction {
   id: string;
   description: string;
@@ -123,9 +100,10 @@ export interface Transaction {
   isRecurrent?: boolean;
   aiCategorized?: boolean;
   fixedExpenseId?: string;
+  incomeStreamId?: string;
+  incomeMonthKey?: string;
   status?: 'active' | 'reverted' | 'deleted';
   revertedAt?: string;
-  mercadoDetails?: MercadoDetails;
 }
 
 export interface RecurrentPreset {

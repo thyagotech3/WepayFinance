@@ -23,6 +23,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
+  signInAnonymously,
   db,
   setDoc,
   doc,
@@ -225,6 +226,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLogin }) => {
           if (!snap.empty) {
             const foundGroup = snap.docs[0].data() as FamilyGroup;
             const targetMemberId = foundGroup.members[1]?.id || foundGroup.members[0]?.id || 'member-1';
+            try {
+              if (!auth.currentUser) {
+                await signInAnonymously(auth);
+              }
+            } catch (e) {}
             onLogin(foundGroup, targetMemberId, false);
             return;
           } else {

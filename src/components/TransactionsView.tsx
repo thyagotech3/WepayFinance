@@ -17,7 +17,6 @@ interface TransactionsViewProps {
   onDeleteTransaction: (id: string) => void;
   onUpdateTransaction?: (updatedTx: Transaction) => void;
   onOpenExpenseModal?: () => void;
-  onOpenRaioX?: (tx: Transaction) => void;
 }
 
 const CATEGORIES: CategoryType[] = [
@@ -51,7 +50,6 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   onDeleteTransaction,
   onUpdateTransaction,
   onOpenExpenseModal,
-  onOpenRaioX,
 }) => {
   // Current selected date for month navigation
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
@@ -624,27 +622,6 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                             Fixa
                           </span>
                         )}
-                        {tx.mercadoDetails && (
-                          <div className="flex items-center gap-1 flex-wrap">
-                            <span className="text-[9px] font-black uppercase text-emerald-300 bg-emerald-500/20 px-1.5 py-0.2 rounded border border-emerald-500/30 flex items-center gap-1">
-                              <ShoppingCart className="w-2.5 h-2.5" />
-                              {tx.mercadoDetails.items?.length || 0} itens
-                            </span>
-                            {onOpenRaioX && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onOpenRaioX(tx);
-                                }}
-                                className="text-[9px] font-bold text-emerald-300 bg-emerald-950/90 hover:bg-emerald-900 border border-emerald-500/40 px-1.5 py-0.2 rounded flex items-center gap-1 transition-colors cursor-pointer"
-                                title="Abrir Raio-X detalhado com produtos e gráficos"
-                              >
-                                <span>Ver Raio-X</span>
-                              </button>
-                            )}
-                          </div>
-                        )}
                       </div>
 
                       {/* Subtitle: Membro + Categoria + Data */}
@@ -832,35 +809,6 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
             ) : (
               /* REGULAR TRANSACTION FORM (Compact & Optimized) */
               <form onSubmit={handleSaveEdit} className="space-y-2.5 sm:space-y-3 text-left">
-                {/* If Mercado Transaction: Prominent button to open full Raio-X */}
-                {selectedTxForDetail.mercadoDetails && onOpenRaioX && (
-                  <div className="p-3 rounded-2xl bg-gradient-to-r from-emerald-950/70 via-teal-950/60 to-purple-950/60 border border-emerald-500/40 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-1.5 text-emerald-300 font-bold">
-                        <ShoppingCart className="w-4 h-4 text-emerald-400" />
-                        <span>Compra Detalhada com Itens</span>
-                      </div>
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-black">
-                        {selectedTxForDetail.mercadoDetails.items?.length || 0} itens
-                      </span>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const tx = selectedTxForDetail;
-                        setSelectedTxForDetail(null);
-                        setEditFormData(null);
-                        onOpenRaioX(tx);
-                      }}
-                      className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer active:scale-95"
-                    >
-                      <PieChart className="w-3.5 h-3.5" />
-                      <span>Ver Raio-X da Compra (Gráficos e Produtos)</span>
-                    </button>
-                  </div>
-                )}
-
                 {/* Descrição */}
                 <div className="space-y-0.5">
                   <label className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider block">

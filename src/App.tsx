@@ -29,11 +29,9 @@ import { NewTransactionView } from './components/NewTransactionView';
 import { PiggyBanksView } from './components/PiggyBanksView';
 import { SettingsModal } from './components/SettingsModal';
 import { SettingsView } from './components/SettingsView';
-import { MercadoModal } from './components/MercadoModal';
-import { MercadoRaioXModal } from './components/MercadoRaioXModal';
 import { BottomDock } from './components/BottomDock';
-import { db, doc, setDoc, collection, onSnapshot, query, where, getDocs, auth, onAuthStateChanged, sanitizeForFirestore, FirebaseUser } from './lib/firebase';
-import { saveIncomeStreamToStorage } from './utils/incomeUtils';
+import { db, doc, setDoc, getDoc, collection, onSnapshot, query, where, getDocs, auth, onAuthStateChanged, sanitizeForFirestore, FirebaseUser } from './lib/firebase';
+import { saveIncomeStreamToStorage, deleteIncomeStreamFromStorage, getStreamAmount, syncIncomesMapToFirestore } from './utils/incomeUtils';
 
 export default function App() {
   const now = new Date();
@@ -113,16 +111,6 @@ export default function App() {
   const [showExpenseModal, setShowExpenseModal] = useState<boolean>(false);
   const [showIncomeModal, setShowIncomeModal] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
-  const [showMercadoModal, setShowMercadoModal] = useState<boolean>(false);
-  const [selectedMercadoTxForRaioX, setSelectedMercadoTxForRaioX] = useState<Transaction | null>(null);
-
-  const handleOpenMercado = () => {
-    setShowMercadoModal(true);
-  };
-
-  const handleOpenRaioX = (tx: Transaction) => {
-    setSelectedMercadoTxForRaioX(tx);
-  };
 
   // Persist state updates to localStorage
   useEffect(() => {
@@ -186,9 +174,26 @@ export default function App() {
     return () => authUnsub();
   }, [group]);
 
-  // Firestore Real-Time Synchronization Listeners (only for authenticated non-demo sessions)
+  // Firestore Real-Time Synchronization Listeners (only for non-demo sessions)
   useEffect(() => {
-    if (isDemo || !authUser || !group?.id) return;
+    if (isDemo || !group?.id) return;
+
+    // Immediate initial fetch to prevent blank/stale state across devices
+    getDoc(doc(db, 'incomes', group.id)).then((docSnap) => {
+      if (docSnap.exists() && docSnap.data().incomesMap) {
+        const map = docSnap.data().incomesMap;
+        localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(map));
+        localStorage.setItem('wepay_monthly_incomes', JSON.stringify(map));
+        window.dispatchEvent(new Event('wepay_incomes_updated'));
+      }
+    }).catch((e) => console.warn('Initial income fetch note:', e));
+
+    getDoc(doc(db, 'groups', group.id)).then((docSnap) => {
+      if (docSnap.exists()) {
+        const remoteGroup = docSnap.data() as FamilyGroup;
+        setGroup((prev) => (prev ? { ...prev, ...remoteGroup } : remoteGroup));
+      }
+    }).catch((e) => console.warn('Initial group fetch note:', e));
 
     // 1. Group listener
     const groupUnsub = onSnapshot(
@@ -270,7 +275,7 @@ export default function App() {
       piggyUnsub();
       incomesUnsub();
     };
-  }, [group?.id, authUser, isDemo]);
+  }, [group?.id, isDemo]);
 
   // Helpers to sync to Firestore
   const syncGroupToFirestore = async (updatedGroup: FamilyGroup) => {
@@ -292,6 +297,11 @@ export default function App() {
     } catch (e) {
       console.warn('Firestore tx sync note:', e);
     }
+  };
+
+  const syncIncomesToFirestore = async (customMap?: Record<string, any>) => {
+    if (!group?.id) return;
+    await syncIncomesMapToFirestore(group.id, customMap);
   };
 
   const syncFixedExpensesToFirestore = async (items: FixedExpenseItem[]) => {
@@ -398,6 +408,138 @@ export default function App() {
     );
   };
 
+  // Toggle income received status and sync to Transaction History
+  const handleToggleIncomeReceived = (
+    memberId: string,
+    streamId: string,
+    nextReceived: boolean,
+    targetMonthKey: string = currentMonthKey,
+    customDate?: string
+  ) => {
+    let currentMap: Record<string, any> = {};
+    try {
+      const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
+      if (saved) currentMap = JSON.parse(saved);
+    } catch (e) {}
+
+    const monthData = currentMap[targetMonthKey] || {};
+    const flatStreams: IncomeStream[] = Array.isArray(currentMap[memberId]) ? currentMap[memberId] : [];
+    const monthStreams: IncomeStream[] = Array.isArray(monthData[memberId]) ? monthData[memberId] : [];
+    const baseList = monthStreams.length > 0 ? monthStreams : flatStreams;
+
+    let targetStream: IncomeStream | undefined;
+    const updatedStreams = baseList.map((s: IncomeStream) => {
+      if (s.id === streamId) {
+        targetStream = {
+          ...s,
+          received: nextReceived,
+          receivedDate: customDate || (nextReceived ? new Date().toISOString().split('T')[0] : s.receivedDate),
+        };
+        return targetStream;
+      }
+      return s;
+    });
+
+    const updatedMap = {
+      ...currentMap,
+      [targetMonthKey]: {
+        ...monthData,
+        [memberId]: updatedStreams,
+      },
+    };
+
+    try {
+      localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(updatedMap));
+      localStorage.setItem('wepay_monthly_incomes', JSON.stringify(updatedMap));
+      window.dispatchEvent(new Event('wepay_incomes_updated'));
+      syncIncomesToFirestore(updatedMap);
+    } catch (e) {
+      console.error('Error saving toggled income:', e);
+    }
+
+    // Synchronize to Transaction History
+    if (targetStream) {
+      const streamAmt = getStreamAmount(targetStream, targetMonthKey);
+      const memberObj = group?.members.find((m) => m.id === memberId);
+
+      if (nextReceived && streamAmt > 0) {
+        let txDate = new Date().toISOString();
+        if (customDate) {
+          if (customDate.includes('/')) {
+            const [d, m] = customDate.split('/');
+            const [y] = targetMonthKey.split('-');
+            const dateObj = new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10), 12, 0, 0);
+            if (!isNaN(dateObj.getTime())) txDate = dateObj.toISOString();
+          } else if (customDate.includes('-')) {
+            const parsed = new Date(customDate);
+            if (!isNaN(parsed.getTime())) txDate = parsed.toISOString();
+          }
+        } else {
+          const [y, m] = targetMonthKey.split('-');
+          const dateObj = new Date(parseInt(y, 10), parseInt(m, 10) - 1, Math.min(28, new Date().getDate()), 12, 0, 0);
+          if (!isNaN(dateObj.getTime())) txDate = dateObj.toISOString();
+        }
+
+        const incomeTx: Transaction = {
+          id: `tx-income-${targetStream.id}-${targetMonthKey}`,
+          incomeStreamId: targetStream.id,
+          incomeMonthKey: targetMonthKey,
+          description: `Renda (${targetStream.name}): ${memberObj?.name || 'Membro'}`,
+          amount: streamAmt,
+          category: 'Serviços',
+          categoryIcon: targetStream.icon || 'TrendingUp',
+          type: 'income',
+          paidByMemberId: memberId,
+          splitType: 'individual',
+          date: txDate,
+          notes: targetStream.notes || 'Renda recebida',
+          status: 'active',
+          aiCategorized: false,
+        };
+
+        setTransactions((prev) => {
+          const filtered = prev.filter((t) => !(t.incomeStreamId === streamId && t.incomeMonthKey === targetMonthKey));
+          return [incomeTx, ...filtered];
+        });
+        syncTransactionToFirestore(incomeTx);
+      } else {
+        // Untoggled -> Mark deleted / remove from history
+        setTransactions((prev) =>
+          prev.map((t) => {
+            if (t.incomeStreamId === streamId && (!t.incomeMonthKey || t.incomeMonthKey === targetMonthKey)) {
+              const reverted = { ...t, status: 'deleted' as const, revertedAt: new Date().toISOString() };
+              syncTransactionToFirestore(reverted);
+              return reverted;
+            }
+            return t;
+          })
+        );
+      }
+    }
+  };
+
+  // Delete Income Stream & Clean up history
+  const handleDeleteIncomeStream = (
+    memberId: string,
+    streamId: string,
+    monthKey: string = currentMonthKey,
+    applyToAllMonths: boolean = false
+  ) => {
+    deleteIncomeStreamFromStorage(memberId, streamId, monthKey, applyToAllMonths, group?.id);
+
+    // Also remove from transactions
+    setTransactions((prev) =>
+      prev.map((t) => {
+        if (t.incomeStreamId === streamId) {
+          const deletedTx = { ...t, status: 'deleted' as const, revertedAt: new Date().toISOString() };
+          syncTransactionToFirestore(deletedTx);
+          return deletedTx;
+        }
+        return t;
+      })
+    );
+  };
+
   // Add Income Stream
   const handleAddIncomeStream = (
     memberId: string,
@@ -405,41 +547,33 @@ export default function App() {
     monthKey: string = currentMonthKey,
     applyToAllMonths: boolean = true
   ) => {
-    saveIncomeStreamToStorage(memberId, streamData, monthKey, group?.id, applyToAllMonths);
+    const savedStream = saveIncomeStreamToStorage(memberId, streamData, monthKey, group?.id, applyToAllMonths);
+    syncIncomesToFirestore();
 
-    // Sync full map to Firestore if group exists
-    if (group?.id) {
-      try {
-        const saved = localStorage.getItem('wepay_couple_incomes_v3');
-        if (saved) {
-          const map = JSON.parse(saved);
-          setDoc(doc(db, 'incomes', group.id), sanitizeForFirestore({ incomesMap: map, groupId: group.id }), { merge: true }).catch((err) => {
-            console.warn('Firestore incomes setDoc notice:', err);
-          });
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    // Only create an income transaction if received is true, amount > 0, and not an extra income stream (extras are recorded via separate entry transactions)
+    // Create an income transaction if marked as received
     if (streamData.received && (streamData.amount || 0) > 0 && streamData.nature !== 'extra') {
       const memberObj = group?.members.find((m) => m.id === memberId);
       const incomeTx: Transaction = {
-        id: `tx-income-${Date.now()}`,
-        description: `Arrecadação (${streamData.name}): ${memberObj?.name || 'Membro'}`,
-        amount: streamData.amount,
+        id: `tx-income-${savedStream.id}-${monthKey}`,
+        incomeStreamId: savedStream.id,
+        incomeMonthKey: monthKey,
+        description: `Renda (${streamData.name}): ${memberObj?.name || 'Membro'}`,
+        amount: streamData.amount || 0,
         category: 'Serviços',
-        categoryIcon: 'TrendingUp',
+        categoryIcon: streamData.icon || 'TrendingUp',
         type: 'income',
         paidByMemberId: memberId,
         splitType: 'individual',
         date: new Date().toISOString(),
-        notes: streamData.notes,
+        notes: streamData.notes || 'Renda recebida',
+        status: 'active',
         aiCategorized: false,
       };
 
-      setTransactions((prev) => [incomeTx, ...prev]);
+      setTransactions((prev) => {
+        const filtered = prev.filter((t) => !(t.incomeStreamId === savedStream.id && t.incomeMonthKey === monthKey));
+        return [incomeTx, ...filtered];
+      });
       syncTransactionToFirestore(incomeTx);
     }
   };
@@ -550,7 +684,6 @@ export default function App() {
         }}
         onOpenExpense={handleOpenExpense}
         onOpenIncome={handleOpenIncome}
-        onOpenMercado={handleOpenMercado}
         onOpenFixedExpenses={handleOpenFixedExpenses}
         onOpenCofrinhos={handleOpenCofrinhos}
         onSwitchMember={(id) => setCurrentMemberId(id)}
@@ -642,8 +775,6 @@ export default function App() {
                 onOpenFixedExpenses={handleOpenFixedExpenses}
                 onOpenFullBalance={() => setSubView('fullBalance')}
                 onOpenCofrinhos={handleOpenCofrinhos}
-                onOpenMercadoModal={handleOpenMercado}
-                onOpenRaioX={handleOpenRaioX}
               />
             )}
 
@@ -655,7 +786,6 @@ export default function App() {
                 onDeleteTransaction={handleDeleteTransaction}
                 onUpdateTransaction={handleUpdateTransaction}
                 onOpenExpenseModal={handleOpenExpense}
-                onOpenRaioX={handleOpenRaioX}
               />
             )}
 
@@ -666,6 +796,11 @@ export default function App() {
                 transactions={transactions}
                 onSettleUp={handleSettleUp}
                 onAddTransaction={handleAddTransaction}
+                onDeleteTransaction={handleDeleteTransaction}
+                onToggleIncomeReceived={handleToggleIncomeReceived}
+                onDeleteIncomeStream={handleDeleteIncomeStream}
+                onAddIncomeStream={handleAddIncomeStream}
+                onSyncIncomes={syncIncomesToFirestore}
               />
             )}
 
@@ -711,40 +846,6 @@ export default function App() {
           currentMember={currentMember}
           onClose={() => setShowIncomeModal(false)}
           onAddIncomeStream={handleAddIncomeStream}
-        />
-      )}
-
-      {showMercadoModal && group && (
-        <MercadoModal
-          members={group.members}
-          currentMember={currentMember}
-          onClose={() => setShowMercadoModal(false)}
-          onSaveMercadoTransaction={(txData) => {
-            handleAddTransaction(txData);
-          }}
-          onSave={(txData) => {
-            handleAddTransaction(txData);
-          }}
-          onOpenRaioX={(tx) => {
-            setShowMercadoModal(false);
-            setSelectedMercadoTxForRaioX(tx);
-          }}
-        />
-      )}
-
-      {selectedMercadoTxForRaioX && (
-        <MercadoRaioXModal
-          transaction={selectedMercadoTxForRaioX}
-          members={group.members}
-          onClose={() => setSelectedMercadoTxForRaioX(null)}
-          onUpdateTransaction={(updatedTx) => {
-            handleUpdateTransaction(updatedTx);
-            setSelectedMercadoTxForRaioX(updatedTx);
-          }}
-          onDeleteTransaction={(id) => {
-            handleDeleteTransaction(id);
-            setSelectedMercadoTxForRaioX(null);
-          }}
         />
       )}
 

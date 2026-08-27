@@ -3,7 +3,7 @@ import { FamilyGroup, FamilyMember, Transaction, IncomeStream, IncomeHistoryEntr
 import { AddIncomeModal } from './AddIncomeModal';
 import { MemberIncomeDetailView } from './MemberIncomeDetailView';
 import { FamilyIncomeOverviewModal } from './FamilyIncomeOverviewModal';
-import { getStreamAmount, formatMemberName, deleteIncomeStreamFromStorage } from '../utils/incomeUtils';
+import { getStreamAmount, formatMemberName, deleteIncomeStreamFromStorage, saveIncomeStreamToStorage, syncIncomesMapToFirestore } from '../utils/incomeUtils';
 import {
   ChevronDown,
   ChevronUp,
@@ -31,7 +31,29 @@ interface CoupleSplitViewProps {
   members: FamilyMember[];
   transactions: Transaction[];
   onSettleUp?: (settlementAmount: number, paidByMemberId: string, receivedByMemberId: string) => void;
-  onAddTransaction?: (transaction: Omit<Transaction, 'id' | 'date'>) => void;
+  onAddTransaction?: (transaction: Omit<Transaction, 'id' | 'date'> & { date?: string; incomeStreamId?: string; incomeMonthKey?: string }) => void;
+  onDeleteTransaction?: (id: string) => void;
+  onToggleIncomeReceived?: (
+    memberId: string,
+    streamId: string,
+    nextReceived: boolean,
+    targetMonthKey?: string,
+    customDate?: string
+  ) => void;
+  onDeleteIncomeStream?: (
+    memberId: string,
+    streamId: string,
+    monthKey?: string,
+    applyToAllMonths?: boolean
+  ) => void;
+  onAddIncomeStream?: (
+    memberId: string,
+    stream: Omit<IncomeStream, 'id'> & { id?: string; received?: boolean },
+    monthKey?: string,
+    applyToAllMonths?: boolean
+  ) => void;
+  onSyncIncomes?: (updatedMap?: Record<string, any>) => void;
+  onSelectMemberForDetail?: (memberId: string) => void;
 }
 
 const MONTHS = [
@@ -226,8 +248,16 @@ function getPredictedFontSize(amount: number) {
 }
 
 export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
+  group,
   members,
+  transactions,
+  onSettleUp,
   onAddTransaction,
+  onDeleteTransaction,
+  onToggleIncomeReceived,
+  onDeleteIncomeStream,
+  onAddIncomeStream: onAddIncomeStreamProp,
+  onSyncIncomes,
   onSelectMemberForDetail,
 }) => {
   // Current selected date for month navigation (matching HomeDashboard standard)
@@ -285,13 +315,16 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
 
   useEffect(() => {
     const serialized = JSON.stringify(incomesMap);
-    if (serialized !== lastSavedIncomesRef.current) {
+    if (serialized !== lastSavedIncomesRef.current && Object.keys(incomesMap).length > 0) {
       lastSavedIncomesRef.current = serialized;
       localStorage.setItem('wepay_couple_incomes_v3', serialized);
       localStorage.setItem('wepay_monthly_incomes', serialized);
       window.dispatchEvent(new Event('wepay_incomes_updated'));
+      if (group?.id) {
+        syncIncomesMapToFirestore(group.id, incomesMap);
+      }
     }
-  }, [incomesMap]);
+  }, [incomesMap, group?.id]);
 
   useEffect(() => {
     const handleReloadIncomes = () => {
@@ -421,15 +454,21 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
     targetMonthKey?: string
   ) => {
     const month = targetMonthKey || selectedMonthKey;
+    const currentStreams = getMemberIncomes(memberId, memberIndex, month);
+    const currentStream = currentStreams.find((s) => s.id === streamId);
+    const nextReceived = forceReceived !== undefined ? forceReceived : (currentStream ? !currentStream.received : true);
+
+    if (onToggleIncomeReceived) {
+      onToggleIncomeReceived(memberId, streamId, nextReceived, month, customReceivedDate);
+    }
+
     setIncomesMap((prevMap) => {
-      const currentStreams = getMemberIncomes(memberId, memberIndex, month);
       const updated = currentStreams.map((s) => {
         if (s.id === streamId) {
-          const nextReceived = forceReceived !== undefined ? forceReceived : !s.received;
           return {
             ...s,
             received: nextReceived,
-            receivedDate: customReceivedDate !== undefined ? customReceivedDate : s.receivedDate,
+            receivedDate: customReceivedDate !== undefined ? customReceivedDate : (nextReceived ? new Date().toISOString().split('T')[0] : s.receivedDate),
           };
         }
         return s;
@@ -439,14 +478,38 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
       if (!newMap[memberId] || !Array.isArray(newMap[memberId]) || newMap[memberId].length === 0) {
         newMap[memberId] = currentStreams;
       }
-      return {
+      const finalMap = {
         ...newMap,
         [month]: {
           ...monthData,
           [memberId]: updated,
         },
       };
+
+      if (group?.id) {
+        syncIncomesMapToFirestore(group.id, finalMap);
+      }
+      return finalMap;
     });
+
+    if (!onToggleIncomeReceived && onAddTransaction && currentStream) {
+      const streamAmt = getStreamAmount(currentStream, month);
+      const memberObj = members.find((m) => m.id === memberId);
+      if (nextReceived && streamAmt > 0) {
+        onAddTransaction({
+          incomeStreamId: currentStream.id,
+          incomeMonthKey: month,
+          description: `Renda (${currentStream.name}): ${memberObj?.name || 'Membro'}`,
+          amount: streamAmt,
+          category: 'Serviços',
+          categoryIcon: currentStream.icon || 'TrendingUp',
+          type: 'income',
+          paidByMemberId: memberId,
+          splitType: 'individual',
+          notes: currentStream.notes || 'Renda recebida',
+        });
+      }
+    }
   };
 
   // Remove Stream
@@ -458,13 +521,19 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
     applyToAllMonths: boolean = false
   ) => {
     const month = targetMonthKey || selectedMonthKey;
-    deleteIncomeStreamFromStorage(memberId, streamId, month, applyToAllMonths);
+    if (onDeleteIncomeStream) {
+      onDeleteIncomeStream(memberId, streamId, month, applyToAllMonths);
+    } else {
+      deleteIncomeStreamFromStorage(memberId, streamId, month, applyToAllMonths, group?.id);
+    }
+
     setIncomesMap((prevMap) => {
       const currentStreams = getMemberIncomes(memberId, memberIndex, month);
       const updated = currentStreams.filter((s) => s.id !== streamId);
       const monthData = prevMap[month] || {};
       const newMap = { ...prevMap };
 
+      let finalMap = newMap;
       if (applyToAllMonths) {
         const baseList = newMap[memberId] && Array.isArray(newMap[memberId]) ? newMap[memberId] : currentStreams;
         newMap[memberId] = baseList.filter((s: IncomeStream) => s.id !== streamId);
@@ -477,12 +546,12 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
             newMap[k][memberId] = newMap[k][memberId].filter((s: IncomeStream) => s.id !== streamId);
           }
         });
-        return newMap;
+        finalMap = newMap;
       } else {
         if (!newMap[memberId] || !Array.isArray(newMap[memberId])) {
           newMap[memberId] = currentStreams;
         }
-        return {
+        finalMap = {
           ...newMap,
           [month]: {
             ...monthData,
@@ -490,6 +559,11 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
           },
         };
       }
+
+      if (group?.id) {
+        syncIncomesMapToFirestore(group.id, finalMap);
+      }
+      return finalMap;
     });
   };
 
@@ -526,13 +600,18 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
       if (!newMap[memberId] || !Array.isArray(newMap[memberId]) || newMap[memberId].length === 0) {
         newMap[memberId] = currentStreams;
       }
-      return {
+      const finalMap = {
         ...newMap,
         [month]: {
           ...monthData,
           [memberId]: updated,
         },
       };
+
+      if (group?.id) {
+        syncIncomesMapToFirestore(group.id, finalMap);
+      }
+      return finalMap;
     });
   };
 
@@ -1167,6 +1246,7 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
             setIncomesMap((prev) => {
               const monthData = prev[currentMonthTarget] || {};
               const newMap = { ...prev };
+              let finalMap = newMap;
               if (applyToAllMonths) {
                 // 1. Update root member default (inherited by future non-overridden months)
                 newMap[memberId] = cleanUpdatedList;
@@ -1211,14 +1291,14 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
                     }
                   }
                 });
-                return newMap;
+                finalMap = newMap;
               } else {
                 // Only update this specific selected month.
                 // Preserve unedited baseline in root member default if not yet set
                 if (!newMap[memberId] || !Array.isArray(newMap[memberId]) || newMap[memberId].length === 0) {
                   newMap[memberId] = currentStreams;
                 }
-                return {
+                finalMap = {
                   ...newMap,
                   [currentMonthTarget]: {
                     ...monthData,
@@ -1226,7 +1306,18 @@ export const CoupleSplitView: React.FC<CoupleSplitViewProps> = ({
                   },
                 };
               }
+
+              if (group?.id) {
+                syncIncomesMapToFirestore(group.id, finalMap);
+              }
+              return finalMap;
             });
+
+            if (onAddIncomeStreamProp) {
+              onAddIncomeStreamProp(memberId, stream, currentMonthTarget, applyToAllMonths);
+            } else {
+              saveIncomeStreamToStorage(memberId, stream, currentMonthTarget, group?.id, applyToAllMonths);
+            }
 
             setActiveAddMemberId(null);
             setEditingStream(null);

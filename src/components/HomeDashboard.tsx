@@ -26,8 +26,6 @@ interface HomeDashboardProps {
   onOpenFixedExpenses: () => void;
   onOpenFullBalance: () => void;
   onOpenCofrinhos?: () => void;
-  onOpenMercadoModal?: () => void;
-  onOpenRaioX?: (tx: Transaction) => void;
 }
 
 export const HomeDashboard: React.FC<HomeDashboardProps> = ({
@@ -44,8 +42,6 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   onOpenFixedExpenses,
   onOpenFullBalance,
   onOpenCofrinhos,
-  onOpenMercadoModal,
-  onOpenRaioX,
 }) => {
   // Current selected date for month navigation
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
@@ -526,20 +522,20 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               </span>
             </button>
 
-            {/* Button 2: MERCADO (CUPOM IA / DETALHADA) */}
+            {/* Button 2: COFRINHOS / POUPANÇA */}
             <button
               type="button"
-              onClick={onOpenMercadoModal}
+              onClick={onOpenCofrinhos}
               className="bg-gradient-to-b from-[#0e2421] to-[#0e1220] border border-emerald-500/40 hover:border-emerald-400 rounded-2xl p-1.5 sm:p-3 aspect-auto py-2 sm:py-3.5 transition-all duration-200 hover:scale-[1.02] flex flex-col items-center justify-center text-center cursor-pointer shadow-lg group relative overflow-hidden"
             >
               <div className="p-1.5 bg-emerald-500/15 text-emerald-400 rounded-xl border border-emerald-500/30 group-hover:scale-110 transition-transform mb-1 shrink-0">
-                <ShoppingCart className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                <PiggyBank className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               </div>
               <span className="text-[9.5px] sm:text-[11px] font-black text-white uppercase tracking-tight block group-hover:text-emerald-300 transition-colors leading-tight">
-                Mercado
+                Cofrinhos
               </span>
               <span className="text-[8px] text-emerald-400/90 block mt-0.5 font-bold line-clamp-1">
-                Cupom IA
+                Metas
               </span>
             </button>
 
