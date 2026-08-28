@@ -1,10 +1,12 @@
+import { parseCurrencyBR } from './currencyUtils';
+
 export function parseExpenseFallback(text: string, memberNames: string[] = ["Você", "Parceiro(a)"]) {
   const lower = text.toLowerCase();
 
   let amount = 0;
   const priceMatch = text.match(/(?:R\$\s*)?(\d+(?:[.,]\d{1,2})?)/i);
   if (priceMatch) {
-    amount = parseFloat(priceMatch[1].replace(',', '.'));
+    amount = parseCurrencyBR(priceMatch[1]);
   }
 
   let type: 'expense' | 'income' | 'fixed' = "expense";

@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { FamilyMember, IncomeStream, IncomeNature } from '../types';
 import { X, Check, Sparkles, Wallet, Calendar, Calculator, Pencil, CalendarRange, CheckCheck } from 'lucide-react';
 import { calculateValesWorkDays, formatMemberName } from '../utils/incomeUtils';
+import { parseCurrencyBR } from '../utils/currencyUtils';
 
 interface AddIncomeModalProps {
   currentMember?: FamilyMember;
@@ -186,7 +187,7 @@ export const AddIncomeModal: React.FC<AddIncomeModalProps> = ({
     return calculateValesWorkDays(activeMonthKey, workDays, workOnHolidays);
   }, [activeMonthKey, workDays, workOnHolidays]);
 
-  const parsedDaily = parseFloat(dailyRate.replace(',', '.')) || 0;
+  const parsedDaily = parseCurrencyBR(dailyRate);
   const calculatedValesTotal = calculatedValesDays * parsedDaily;
 
   const toggleWorkDay = (dayId: string) => {
@@ -210,7 +211,7 @@ export const AddIncomeModal: React.FC<AddIncomeModalProps> = ({
   };
 
   const executeSave = (applyToAllMonths: boolean) => {
-    const parsedValue = parseFloat(amount.replace(',', '.')) || 0;
+    const parsedValue = parseCurrencyBR(amount);
 
     let formattedDueDate = dueDate.trim();
     if (formattedDueDate && !formattedDueDate.toLowerCase().startsWith('dia') && !formattedDueDate.toLowerCase().includes('s/')) {

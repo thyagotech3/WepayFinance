@@ -77,11 +77,12 @@ export const FamilyIncomeOverviewModal: React.FC<FamilyIncomeOverviewModalProps>
       let expectedTotal = 0;
 
       streams.forEach((s) => {
-        const amt = getStreamAmount(s) || s.targetGoal || 0;
+        const isExtra = s.nature === 'extra';
+        const amt = isExtra ? Math.max(s.targetGoal || 0, s.amount || 0) : (getStreamAmount(s, monthKey) || s.targetGoal || 0);
+        const recAmt = isExtra ? (s.amount || 0) : (s.received ? (getStreamAmount(s, monthKey) || s.targetGoal || 0) : 0);
+
         expectedTotal += amt;
-        if (s.received) {
-          receivedTotal += amt;
-        }
+        receivedTotal += recAmt;
 
         if (s.nature === 'fixed') {
           fixedTotal += amt;
@@ -126,19 +127,22 @@ export const FamilyIncomeOverviewModal: React.FC<FamilyIncomeOverviewModalProps>
 
     membersDetailedData.forEach(({ member, index, streams }) => {
       streams.forEach((s) => {
-        const amt = getStreamAmount(s) || s.targetGoal || 0;
+        const isExtra = s.nature === 'extra';
+        const amt = isExtra ? Math.max(s.targetGoal || 0, s.amount || 0) : (getStreamAmount(s, monthKey) || s.targetGoal || 0);
+        const recAmt = isExtra ? (s.amount || 0) : (s.received ? (getStreamAmount(s, monthKey) || s.targetGoal || 0) : 0);
+
         totalExpected += amt;
-        if (s.received) totalReceived += amt;
+        totalReceived += recAmt;
 
         if (s.nature === 'fixed') {
           totalFixed += amt;
-          if (s.received) fixedReceived += amt;
+          fixedReceived += recAmt;
         } else if (s.nature === 'vales') {
           totalVales += amt;
-          if (s.received) valesReceived += amt;
+          valesReceived += recAmt;
         } else {
           totalExtra += amt;
-          if (s.received) extraReceived += amt;
+          extraReceived += recAmt;
         }
 
         allStreams.push({ stream: s, member, memberIndex: index });
@@ -168,7 +172,7 @@ export const FamilyIncomeOverviewModal: React.FC<FamilyIncomeOverviewModalProps>
       extraPct,
       allStreams,
     };
-  }, [membersDetailedData]);
+  }, [membersDetailedData, monthKey]);
 
   // Filtered streams list
   const filteredStreams = useMemo(() => {
@@ -177,8 +181,17 @@ export const FamilyIncomeOverviewModal: React.FC<FamilyIncomeOverviewModalProps>
       if (filterType === 'fixed') return stream.nature === 'fixed';
       if (filterType === 'vales') return stream.nature === 'vales';
       if (filterType === 'extra') return stream.nature === 'extra';
-      if (filterType === 'pending') return !stream.received;
-      if (filterType === 'received') return !!stream.received;
+      if (filterType === 'pending') {
+        if (stream.nature === 'extra') {
+          const target = stream.targetGoal || 0;
+          const current = stream.amount || 0;
+          return target > 0 ? current < target : !stream.received;
+        }
+        return !stream.received;
+      }
+      if (filterType === 'received') {
+        return stream.nature === 'extra' ? (stream.amount || 0) > 0 : !!stream.received;
+      }
       return true;
     });
   }, [familySummary.allStreams, filterType]);
@@ -521,8 +534,12 @@ export const FamilyIncomeOverviewModal: React.FC<FamilyIncomeOverviewModalProps>
             ) : (
               <div className="space-y-2">
                 {filteredStreams.map(({ stream, member }) => {
-                  const amt = getStreamAmount(stream) || stream.targetGoal || 0;
+                  const isExtra = stream.nature === 'extra';
+                  const expectedAmt = isExtra ? Math.max(stream.targetGoal || 0, stream.amount || 0) : (getStreamAmount(stream, monthKey) || stream.targetGoal || 0);
+                  const receivedAmt = isExtra ? (stream.amount || 0) : (stream.received ? expectedAmt : 0);
                   const formattedDue = formatIncomeDueDate(stream.dueDate);
+                  const isComplete = isExtra ? (stream.targetGoal ? (stream.amount || 0) >= stream.targetGoal : (stream.amount || 0) > 0) : !!stream.received;
+                  const isPartial = isExtra && (stream.amount || 0) > 0 && stream.targetGoal && (stream.amount || 0) < stream.targetGoal;
                   const natureBadge =
                     stream.nature === 'fixed' ? 'Fixa' : stream.nature === 'vales' ? 'Vales' : 'Extra';
                   const natureColor =
@@ -571,17 +588,22 @@ export const FamilyIncomeOverviewModal: React.FC<FamilyIncomeOverviewModalProps>
 
                       <div className="flex flex-col items-end shrink-0">
                         <span className="text-xs sm:text-sm font-black text-white font-mono">
-                          R$ {amt.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                          R$ {expectedAmt.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                         </span>
                         <span
                           className={`text-[10px] font-bold flex items-center gap-1 mt-0.5 ${
-                            stream.received ? 'text-emerald-400' : 'text-amber-400'
+                            isComplete ? 'text-emerald-400' : isPartial ? 'text-blue-400' : 'text-amber-400'
                           }`}
                         >
-                          {stream.received ? (
+                          {isComplete ? (
                             <>
                               <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                               <span>Recebido</span>
+                            </>
+                          ) : isPartial ? (
+                            <>
+                              <Clock className="w-3 h-3 text-blue-400" />
+                              <span>R$ {receivedAmt.toLocaleString('pt-BR', { minimumFractionDigits: 0 })} / {expectedAmt.toLocaleString('pt-BR', { minimumFractionDigits: 0 })}</span>
                             </>
                           ) : (
                             <>

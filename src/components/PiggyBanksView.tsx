@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { FamilyMember, PiggyBankItem, Transaction } from '../types';
 import { INITIAL_PIGGY_BANKS } from '../data/mockInitialData';
+import { useAppStore } from '../store/useAppStore';
+import { parseCurrencyBR } from '../utils/currencyUtils';
 import {
   ChevronLeft,
   X,
@@ -22,8 +24,6 @@ import {
 } from 'lucide-react';
 
 interface PiggyBanksViewProps {
-  members: FamilyMember[];
-  currentMember: FamilyMember;
   cofrinhos?: PiggyBankItem[];
   onUpdateCofrinhos?: (cofrinhos: PiggyBankItem[]) => void;
   onBack: () => void;
@@ -32,14 +32,15 @@ interface PiggyBanksViewProps {
 }
 
 export const PiggyBanksView: React.FC<PiggyBanksViewProps> = ({
-  members,
-  currentMember,
   cofrinhos: propCofrinhos,
   onUpdateCofrinhos,
   onBack,
   onClose,
   onAddTransaction,
 }) => {
+  const { group, currentMemberId } = useAppStore();
+  const members = group?.members || [];
+  const currentMember = members.find((m) => m.id === currentMemberId) || members[0];
   // Load initial cofrinhos from props or localStorage
   const [localCofrinhos, setLocalCofrinhos] = useState<PiggyBankItem[]>(() => {
     if (propCofrinhos) return propCofrinhos;
@@ -202,8 +203,8 @@ export const PiggyBanksView: React.FC<PiggyBanksViewProps> = ({
     e.preventDefault();
     if (!formTitle.trim()) return;
 
-    const targetVal = parseFloat(formTargetAmount.replace(',', '.')) || 0;
-    const currentVal = parseFloat(formCurrentAmount.replace(',', '.')) || 0;
+    const targetVal = parseCurrencyBR(formTargetAmount);
+    const currentVal = parseCurrencyBR(formCurrentAmount);
 
     if (modalMode === 'edit' && selectedCofrinho) {
       const updated: PiggyBankItem = {
@@ -241,7 +242,7 @@ export const PiggyBanksView: React.FC<PiggyBanksViewProps> = ({
     e.preventDefault();
     if (!selectedCofrinho) return;
 
-    const val = parseFloat(actionAmount.replace(',', '.')) || 0;
+    const val = parseCurrencyBR(actionAmount);
     if (val <= 0) return;
 
     if (modalMode === 'deposit') {

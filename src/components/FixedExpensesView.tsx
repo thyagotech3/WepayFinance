@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { FamilyMember, FixedExpenseItem, Transaction } from '../types';
+import { useAppStore } from '../store/useAppStore';
 import {
   FixedExpenseModal,
   getDueDateStatus,
@@ -22,33 +23,35 @@ import {
   Wallet,
   ArrowUpRight,
   Sparkles,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface FixedExpensesViewProps {
-  members: FamilyMember[];
-  currentMember: FamilyMember;
   expenses?: FixedExpenseItem[];
   onUpdateExpenses?: (expenses: FixedExpenseItem[]) => void;
   onBack: () => void;
   onClose?: () => void;
   onAddTransaction: (transaction: Omit<Transaction, 'id' | 'date'>) => void;
-  onRevertFixedExpenseTransaction?: (fixedExpenseId: string) => void;
+  onRevertFixedExpenseTransaction?: (fixedExpenseId: string, monthKey?: string) => void;
 }
 
 export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
-  members,
-  currentMember,
   expenses: propExpenses,
   onUpdateExpenses,
+  onBack,
+  onClose,
   onAddTransaction,
   onRevertFixedExpenseTransaction,
 }) => {
+  const { group, currentMemberId } = useAppStore();
+  const members = group?.members || [];
+  const currentMember = members.find((m) => m.id === currentMemberId) || members[0];
   // Current month calculation
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
 
   // Search and Filter states for Mobile & Desktop
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'paid'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'overdue' | 'paid'>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [showCategoryDrawer, setShowCategoryDrawer] = useState<boolean>(false);
 
@@ -137,6 +140,16 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
   // Filter expenses by current month key (or fixed/variable/installment items)
   const currentMonthExpenses = useMemo(() => {
     return expenses.filter((item) => {
+      // If month is excluded, hide it
+      if (item.excludedMonths?.includes(monthKey)) return false;
+
+      // Check start month for fixed/variable
+      if (item.recurrenceType === 'fixed_amount' || item.recurrenceType === 'variable_amount') {
+        if (item.startMonthKey && monthKey < item.startMonthKey) return false;
+        if (item.endMonthKey && monthKey > item.endMonthKey) return false;
+        return true;
+      }
+
       if (item.recurrenceType === 'single_month') {
         return item.monthKey === monthKey;
       }
@@ -144,10 +157,14 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
         const info = getInstallmentInfo(item, monthKey);
         return info ? info.isActiveInMonth : item.monthKey === monthKey;
       }
-      // Fixed & Variable roll over
       return true;
     });
   }, [expenses, monthKey]);
+
+  // Helper to check if item is paid in current month
+  const isItemPaidInMonth = (item: FixedExpenseItem) => {
+    return item.paidMonths?.includes(monthKey) || false;
+  };
 
   // Calculate totals
   const totalAmount = useMemo(
@@ -157,29 +174,94 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
   const totalPaid = useMemo(
     () =>
       currentMonthExpenses
-        .filter((e) => e.isPaid)
+        .filter((e) => isItemPaidInMonth(e))
         .reduce((acc, curr) => acc + curr.amount, 0),
-    [currentMonthExpenses]
+    [currentMonthExpenses, monthKey]
   );
   const totalPending = useMemo(
     () =>
       currentMonthExpenses
-        .filter((e) => !e.isPaid)
+        .filter((e) => !isItemPaidInMonth(e))
         .reduce((acc, curr) => acc + curr.amount, 0),
-    [currentMonthExpenses]
+    [currentMonthExpenses, monthKey]
   );
 
   const paidCount = useMemo(
-    () => currentMonthExpenses.filter((e) => e.isPaid).length,
-    [currentMonthExpenses]
+    () => currentMonthExpenses.filter((e) => isItemPaidInMonth(e)).length,
+    [currentMonthExpenses, monthKey]
   );
   const pendingCount = useMemo(
-    () => currentMonthExpenses.filter((e) => !e.isPaid).length,
-    [currentMonthExpenses]
+    () => currentMonthExpenses.filter((e) => !isItemPaidInMonth(e)).length,
+    [currentMonthExpenses, monthKey]
   );
+
+  // Helper to calculate days diff for an item in current month
+  const getItemDueDiffDays = (item: FixedExpenseItem) => {
+    const match = String(item.dueDate || '').match(/\d+/);
+    const dayNum = match ? parseInt(match[0], 10) : 10;
+    const [yearStr, monthStr] = monthKey.split('-');
+    const year = parseInt(yearStr, 10) || new Date().getFullYear();
+    const month = (parseInt(monthStr, 10) || (new Date().getMonth() + 1)) - 1;
+
+    const dueDateObj = new Date(year, month, dayNum);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const diffTime = dueDateObj.getTime() - today.getTime();
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  };
+
+  // Smart due date categorization for unpaid items
+  const unpaidAnalysis = useMemo(() => {
+    const unpaid = currentMonthExpenses.filter((e) => !e.isPaid);
+    const overdueList: FixedExpenseItem[] = [];
+    const dueTodayList: FixedExpenseItem[] = [];
+    const dueWithin10DaysList: { item: FixedExpenseItem; diff: number }[] = [];
+    const dueAfter10DaysList: { item: FixedExpenseItem; diff: number }[] = [];
+
+    unpaid.forEach((item) => {
+      const isPaid = isItemPaidInMonth(item);
+      if (isPaid) return;
+      
+      const diff = getItemDueDiffDays(item);
+      if (diff < 0) {
+        overdueList.push(item);
+      } else if (diff === 0) {
+        dueTodayList.push(item);
+      } else if (diff <= 10) {
+        dueWithin10DaysList.push({ item, diff });
+      } else {
+        dueAfter10DaysList.push({ item, diff });
+      }
+    });
+
+    // Sort by nearest due day
+    dueWithin10DaysList.sort((a, b) => a.diff - b.diff);
+    dueAfter10DaysList.sort((a, b) => a.diff - b.diff);
+
+    const nearestDaysWithin10 = dueWithin10DaysList.length > 0 ? dueWithin10DaysList[0].diff : null;
+    const nearestDaysAfter10 = dueAfter10DaysList.length > 0 ? dueAfter10DaysList[0].diff : null;
+
+    return {
+      overdue: overdueList,
+      dueToday: dueTodayList,
+      dueWithin10Days: dueWithin10DaysList.map((d) => d.item),
+      nearestDaysWithin10,
+      dueAfter10Days: dueAfter10DaysList.map((d) => d.item),
+      nearestDaysAfter10,
+      totalUnpaid: unpaid.length,
+    };
+  }, [currentMonthExpenses, monthKey]);
+
+  const overdueCount = unpaidAnalysis.overdue.length;
 
   const progressPercent =
     totalAmount > 0 ? Math.min(100, Math.round((totalPaid / totalAmount) * 100)) : 0;
+
+  // Month name display in Portuguese (e.g. Agosto)
+  const currentMonthPT = useMemo(() => {
+    return currentDate.toLocaleDateString('pt-BR', { month: 'long' }).replace(/^\w/, (c) => c.toUpperCase());
+  }, [currentDate]);
 
   // Calculate expense responsibility per member (direct + 50% shared)
   const getMemberExpenseTotal = (memberId: string) => {
@@ -202,9 +284,16 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
   // Filtered expenses list based on search and filters
   const filteredExpenses = useMemo(() => {
     return currentMonthExpenses.filter((item) => {
+      const isPaid = isItemPaidInMonth(item);
+      
       // Status filter
-      if (statusFilter === 'pending' && item.isPaid) return false;
-      if (statusFilter === 'paid' && !item.isPaid) return false;
+      if (statusFilter === 'pending' && isPaid) return false;
+      if (statusFilter === 'paid' && !isPaid) return false;
+      if (statusFilter === 'overdue') {
+        if (isPaid) return false;
+        const diff = getItemDueDiffDays(item);
+        if (diff >= 0) return false;
+      }
 
       // Category filter
       if (selectedCategory !== 'all' && item.category !== selectedCategory) return false;
@@ -220,7 +309,7 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
 
       return true;
     });
-  }, [currentMonthExpenses, statusFilter, selectedCategory, searchQuery]);
+  }, [currentMonthExpenses, statusFilter, selectedCategory, searchQuery, monthKey]);
 
   // Unique categories in this month with amounts
   const categoryBreakdown = useMemo(() => {
@@ -257,12 +346,8 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
       const newExpense: FixedExpenseItem = {
         ...expenseData,
         id: newId,
-        monthKey:
-          expenseData.recurrenceType === 'single_month' ||
-          expenseData.recurrenceType === 'installment'
-            ? monthKey
-            : undefined,
-      };
+        monthKey: expenseData.monthKey || monthKey,
+      } as FixedExpenseItem;
       setExpenses((prev) => [newExpense, ...prev]);
     }
 
@@ -273,6 +358,9 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
         expenseData.recurrenceType === 'installment'
           ? getInstallmentInfo(expenseData as FixedExpenseItem, monthKey)
           : null;
+      
+      // Since it was saved as paid in the modal, we ensure it's in paidMonths
+      // but onSave usually handles the item update.
 
       const recText =
         expenseData.recurrenceType === 'fixed_amount'
@@ -301,14 +389,14 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
         fixedExpenseId: savedId,
       });
     } else if (onRevertFixedExpenseTransaction && savedId) {
-      onRevertFixedExpenseTransaction(savedId);
+      onRevertFixedExpenseTransaction(savedId, monthKey);
     }
   };
 
   const handleDeleteExpense = (id: string) => {
     setExpenses((prev) => prev.filter((e) => e.id !== id));
     if (onRevertFixedExpenseTransaction) {
-      onRevertFixedExpenseTransaction(id);
+      onRevertFixedExpenseTransaction(id, monthKey);
     }
   };
 
@@ -318,8 +406,10 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
   ) => {
     if (e) e.stopPropagation();
 
+    const isPaid = isItemPaidInMonth(item);
+
     // If item is currently unpaid, open modal asking who paid this month
-    if (!item.isPaid) {
+    if (!isPaid) {
       setPayerPromptExpense(item);
       setSelectedPayerId(item.paidByMemberId || currentMember.id || 'both');
       return;
@@ -327,18 +417,37 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
 
     // If item was already paid, unmark as paid and revert transaction
     setExpenses((prev) =>
-      prev.map((ex) => (ex.id === item.id ? { ...ex, isPaid: false } : ex))
+      prev.map((ex) => {
+        if (ex.id === item.id) {
+          const paidMonths = ex.paidMonths || [];
+          return { 
+            ...ex, 
+            paidMonths: paidMonths.filter(m => m !== monthKey)
+          };
+        }
+        return ex;
+      })
     );
     if (onRevertFixedExpenseTransaction) {
-      onRevertFixedExpenseTransaction(item.id);
+      onRevertFixedExpenseTransaction(item.id, monthKey);
     }
   };
 
   const handleConfirmPayment = (expense: FixedExpenseItem, payerId: string) => {
     setExpenses((prev) =>
-      prev.map((ex) =>
-        ex.id === expense.id ? { ...ex, isPaid: true, paidByMemberId: payerId } : ex
-      )
+      prev.map((ex) => {
+        if (ex.id === expense.id) {
+          const paidMonths = ex.paidMonths || [];
+          if (!paidMonths.includes(monthKey)) {
+            return { 
+              ...ex, 
+              paidMonths: [...paidMonths, monthKey],
+              paidByMemberId: payerId 
+            };
+          }
+        }
+        return ex;
+      })
     );
 
     const meta = CATEGORIES_META[expense.category];
@@ -497,6 +606,89 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
                   />
                 </div>
               </div>
+
+              {/* SMART DUE DATE NOTIFICATION BANNER (Unified height, padding, centered alignment, and font) */}
+              {(() => {
+                // Priority 1: Contas Vencidas (Vermelho)
+                if (unpaidAnalysis.overdue.length > 0) {
+                  const count = unpaidAnalysis.overdue.length;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setStatusFilter('overdue')}
+                      className="w-full py-2 px-3 rounded-xl bg-rose-950/60 hover:bg-rose-900/80 border border-rose-500/40 text-rose-200 flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-[0.98] cursor-pointer"
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 animate-pulse" />
+                      <span className="truncate">
+                        Você tem <span className="underline underline-offset-2 font-black text-white font-mono">({count})</span> {count === 1 ? 'conta vencida' : 'contas vencidas'} em {currentMonthPT}
+                      </span>
+                    </button>
+                  );
+                }
+
+                // Priority 2: Vence Hoje (Laranja)
+                if (unpaidAnalysis.dueToday.length > 0) {
+                  const count = unpaidAnalysis.dueToday.length;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setStatusFilter('pending')}
+                      className="w-full py-2 px-3 rounded-xl bg-orange-950/60 hover:bg-orange-900/80 border border-orange-500/40 text-orange-200 flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-[0.98] cursor-pointer"
+                    >
+                      <Clock className="w-3.5 h-3.5 text-orange-400 shrink-0 animate-bounce" />
+                      <span className="truncate">
+                        Você tem <span className="underline underline-offset-2 font-black text-white font-mono">({count})</span> {count === 1 ? 'conta à vencer hoje' : 'contas à vencer hoje'}
+                      </span>
+                    </button>
+                  );
+                }
+
+                // Priority 3: A Pagar em 10 dias ou menos (Laranja / Âmbar)
+                if (unpaidAnalysis.dueWithin10Days.length > 0) {
+                  const days = unpaidAnalysis.nearestDaysWithin10 || 1;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setStatusFilter('pending')}
+                      className="w-full py-2 px-3 rounded-xl bg-orange-950/60 hover:bg-orange-900/80 border border-orange-500/40 text-orange-200 flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-[0.98] cursor-pointer"
+                    >
+                      <Clock className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                      <span className="truncate">
+                        Você tem contas à vencer em <span className="underline underline-offset-2 font-black text-white font-mono">{days} {days === 1 ? 'dia' : 'dias'}</span>
+                      </span>
+                    </button>
+                  );
+                }
+
+                // Priority 4: A Pagar depois de 10 dias no mês vigente (Azul)
+                if (unpaidAnalysis.dueAfter10Days.length > 0) {
+                  const count = unpaidAnalysis.dueAfter10Days.length;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setStatusFilter('pending')}
+                      className="w-full py-2 px-3 rounded-xl bg-sky-950/60 hover:bg-sky-900/80 border border-sky-500/40 text-sky-200 flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-[0.98] cursor-pointer"
+                    >
+                      <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                      <span className="truncate">
+                        Você tem <span className="underline underline-offset-2 font-black text-white font-mono">({count})</span> {count === 1 ? 'conta a pagar ainda esse mês' : 'contas a pagar ainda esse mês'}
+                      </span>
+                    </button>
+                  );
+                }
+
+                // All paid state (Verde discreto)
+                if (currentMonthExpenses.length > 0) {
+                  return (
+                    <div className="w-full py-2 px-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 flex items-center justify-center gap-2 text-xs font-bold">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Todas as contas deste mês estão quitadas!</span>
+                    </div>
+                  );
+                }
+
+                return null;
+              })()}
             </div>
           </div>
 
@@ -519,7 +711,7 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
                     Contas Fixas ({filteredExpenses.length})
                   </h3>
                   <span className="text-[10px] sm:text-[11px] text-slate-400 font-medium block mt-0.5 truncate">
-                    {pendingCount > 0 ? `${pendingCount} a pagar neste mês` : 'Todas as contas quitadas'}
+                    {overdueCount > 0 ? `${overdueCount} vencidas • ` : ''}{pendingCount > 0 ? `${pendingCount} a pagar neste mês` : 'Todas as contas quitadas'}
                   </span>
                 </div>
               </div>
@@ -557,11 +749,11 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
               </div>
 
               {/* Status Switcher Buttons */}
-              <div className="grid grid-cols-3 gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-center">
+              <div className={`grid ${overdueCount > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-center`}>
                 <button
                   type="button"
                   onClick={() => setStatusFilter('all')}
-                  className={`py-1.5 px-2 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  className={`py-1.5 px-1 sm:px-2 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all cursor-pointer truncate ${
                     statusFilter === 'all'
                       ? 'bg-purple-600 text-white shadow'
                       : 'text-slate-400 hover:text-white'
@@ -569,10 +761,24 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
                 >
                   Todas ({currentMonthExpenses.length})
                 </button>
+                {overdueCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter('overdue')}
+                    className={`py-1.5 px-1 sm:px-2 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all cursor-pointer truncate flex items-center justify-center gap-1 ${
+                      statusFilter === 'overdue'
+                        ? 'bg-rose-600 text-white shadow'
+                        : 'text-rose-400 hover:text-rose-300'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-ping shrink-0" />
+                    <span>Vencidas ({overdueCount})</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setStatusFilter('pending')}
-                  className={`py-1.5 px-2 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  className={`py-1.5 px-1 sm:px-2 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all cursor-pointer truncate ${
                     statusFilter === 'pending'
                       ? 'bg-rose-600 text-white shadow'
                       : 'text-slate-400 hover:text-white'
@@ -583,7 +789,7 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setStatusFilter('paid')}
-                  className={`py-1.5 px-2 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  className={`py-1.5 px-1 sm:px-2 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all cursor-pointer truncate ${
                     statusFilter === 'paid'
                       ? 'bg-emerald-600 text-slate-950 shadow'
                       : 'text-slate-400 hover:text-white'
@@ -617,7 +823,8 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
 
               {/* Existing Expense Cards */}
               {filteredExpenses.map((item) => {
-                const dueStatus = getDueDateStatus(item.dueDate, item.isPaid, monthKey);
+                const isPaid = isItemPaidInMonth(item);
+                const dueStatus = getDueDateStatus(item.dueDate, isPaid, monthKey);
 
                 return (
                   <div
@@ -639,7 +846,7 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
                         <button
                           type="button"
                           className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${
-                            !item.isPaid
+                            !isPaid
                               ? 'bg-rose-500 text-white shadow-xs'
                               : 'text-slate-500 hover:text-slate-300'
                           }`}
@@ -649,7 +856,7 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
                         <button
                           type="button"
                           className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${
-                            item.isPaid
+                            isPaid
                               ? 'bg-emerald-500 text-slate-950 shadow-xs'
                               : 'text-slate-500 hover:text-slate-300'
                           }`}
@@ -671,14 +878,14 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
                       {/* Due Date Status badge (e.g. 🗓️ Dia 10 (Pago)) */}
                       <div
                         className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[11px] font-semibold border ${
-                          item.isPaid
+                          isPaid
                             ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-400'
                             : dueStatus.colorClass
                         }`}
                       >
                         <Calendar className="w-3 h-3" />
                         <span>
-                          Dia {item.dueDate} {item.isPaid ? '(Pago)' : ''}
+                          Dia {item.dueDate} {isPaid ? '(Pago)' : ''}
                         </span>
                       </div>
 

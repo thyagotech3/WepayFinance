@@ -99,48 +99,65 @@ export const AIChatBar: React.FC<AIChatBarProps> = ({
       timerIntervalRef.current = setInterval(() => {
         setRecordingSeconds((prev) => prev + 1);
       }, 1000);
-    } catch (err) {
-      console.error('Microfone inacessível:', err);
-      // Speech Recognition fallback if microphone access fails or in unsupported context
-      runSpeechRecognitionFallback();
+    } catch (err: any) {
+      setIsRecording(false);
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      const isDismissed =
+        err?.name === 'NotAllowedError' ||
+        err?.name === 'PermissionDismissedError' ||
+        err?.message?.toLowerCase().includes('dismissed') ||
+        err?.message?.toLowerCase().includes('permission');
+      if (!isDismissed) {
+        console.warn('Microfone não acessível, tentando fallback de voz...', err);
+        runSpeechRecognitionFallback();
+      }
     }
   };
 
   const stopVoiceRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
       setIsRecording(false);
-      clearInterval(timerIntervalRef.current);
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     }
   };
 
   const runSpeechRecognitionFallback = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert('Seu navegador não suporta gravação de voz direta. Digite no campo de texto.');
       return;
     }
 
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'pt-BR';
-    recognition.interimResults = false;
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'pt-BR';
+      recognition.interimResults = false;
 
-    recognition.onstart = () => {
-      setIsRecording(true);
-    };
+      recognition.onstart = () => {
+        setIsRecording(true);
+      };
 
-    recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setInputText(transcript);
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        setInputText(transcript);
+        setIsRecording(false);
+        handleInterpretText(transcript);
+      };
+
+      recognition.onerror = () => {
+        setIsRecording(false);
+      };
+
+      recognition.onend = () => {
+        setIsRecording(false);
+      };
+
+      recognition.start();
+    } catch (e) {
       setIsRecording(false);
-      handleInterpretText(transcript);
-    };
-
-    recognition.onerror = () => {
-      setIsRecording(false);
-    };
-
-    recognition.start();
+    }
   };
 
   const processAudioBlob = async (blob: Blob) => {

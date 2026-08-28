@@ -4,14 +4,15 @@ import { Home, History, Plus, Sparkles, Wallet } from 'lucide-react';
 interface BottomDockProps {
   activeTab: 'home' | 'transactions' | 'split' | 'analytics' | 'advisor';
   setActiveTab: (tab: 'home' | 'transactions' | 'split' | 'analytics' | 'advisor') => void;
-  onOpenExpenseModal: () => void;
+  onAddClick: () => void;
   onOpenSettings: () => void;
 }
 
 export const BottomDock: React.FC<BottomDockProps> = ({
   activeTab,
   setActiveTab,
-  onOpenExpenseModal,
+  onAddClick,
+  onOpenSettings,
 }) => {
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 z-[60] bg-[#090c17]/95 border-t border-slate-800/80 backdrop-blur-xl px-2 sm:px-4 pt-2 pb-safe shadow-2xl tap-highlight-transparent touch-callout-none">
@@ -52,7 +53,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
         <div className="-mt-6 flex flex-col items-center justify-center">
           <button
             type="button"
-            onClick={onOpenExpenseModal}
+            onClick={onAddClick}
             className="w-14 h-14 rounded-full bg-gradient-to-tr from-pink-500 via-rose-500 to-purple-600 text-white flex items-center justify-center shadow-lg shadow-pink-500/40 hover:scale-110 active:scale-95 transition-all cursor-pointer ring-4 ring-[#090c17]"
             title="Lançar Novo Gasto Rápido"
           >

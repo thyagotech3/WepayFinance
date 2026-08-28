@@ -6,7 +6,8 @@ service cloud.firestore {
     }
 
     match /groups/{groupId} {
-      allow read, write: if isSignedIn();
+      allow read, write: if isSignedIn() &&
+        (resource == null || request.auth.uid in resource.data.memberUids || request.auth.uid == resource.data.ownerUid);
     }
 
     match /transactions/{transactionId} {

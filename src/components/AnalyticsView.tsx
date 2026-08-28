@@ -1,20 +1,13 @@
 import React from 'react';
-import { FamilyGroup, FamilyMember, Transaction } from '../types';
+import { useAppStore } from '../store/useAppStore';
 import { CATEGORIES_META } from '../data/suggestions';
 import { PieChart as PieChartIcon, BarChart3, TrendingUp, DollarSign } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, Legend } from 'recharts';
 
-interface AnalyticsViewProps {
-  group: FamilyGroup;
-  members: FamilyMember[];
-  transactions: Transaction[];
-}
+export const AnalyticsView: React.FC = () => {
+  const { group, transactions } = useAppStore();
+  const members = group?.members || [];
 
-export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
-  group,
-  members,
-  transactions,
-}) => {
   const expenses = transactions.filter(
     (t) => t.type === 'expense' && t.status !== 'reverted' && t.status !== 'deleted'
   );

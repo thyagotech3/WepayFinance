@@ -1,7 +1,9 @@
+import { useAppStore } from "../store/useAppStore";
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { FamilyMember, CategoryType, SplitType, Transaction, IncomeStream, IncomeHistoryEntry } from '../types';
 import { CATEGORIES_META } from '../data/suggestions';
+import { parseCurrencyBR } from '../utils/currencyUtils';
 import { 
   getMemberIncomeOptions, 
   saveIncomeStreamToStorage, 
@@ -28,8 +30,6 @@ import {
 } from 'lucide-react';
 
 interface NewTransactionViewProps {
-  members: FamilyMember[];
-  currentMember: FamilyMember;
   initialType?: 'expense' | 'income' | 'fixed';
   onBack: () => void;
   onAddTransaction: (transaction: Omit<Transaction, 'id' | 'date'> & { date?: string }) => void;
@@ -38,14 +38,15 @@ interface NewTransactionViewProps {
 }
 
 export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
-  members,
-  currentMember,
   initialType = 'expense',
   onBack,
   onAddTransaction,
   onAddIncomeStream,
   onOpenFixedExpenses,
 }) => {
+  const { group, currentMemberId } = useAppStore();
+  const members = group?.members || [];
+  const currentMember = members.find((m) => m.id === currentMemberId) || members[0];
   const [transactionType, setTransactionType] = useState<'expense' | 'income' | 'fixed'>(initialType);
 
   useEffect(() => {
@@ -180,8 +181,7 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
 
   const handleAddGainToActiveStream = () => {
     if (!activeExtraStream) return;
-    const inputVal = registerAmountInput.replace(',', '.');
-    const added = parseFloat(inputVal) || 0;
+    const added = parseCurrencyBR(registerAmountInput);
     const noteText = registerNoteInput.trim();
     if (added <= 0) return;
 
@@ -189,9 +189,8 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
     const currentAmt = activeExtraStream.amount || 0;
     const newTotal = currentAmt + added;
 
-    const now = new Date();
-    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const mKey = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`;
+    const dateStr = `${String(selectedDate.getDate()).padStart(2, '0')}/${String(selectedDate.getMonth() + 1).padStart(2, '0')}`;
 
     const newEntry: IncomeHistoryEntry = {
       id: 'entry_' + Date.now(),
@@ -210,20 +209,19 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
       notes: noteText || activeExtraStream.notes,
       history: updatedHistory,
       lastEntryAmount: added,
-      receivedDate: now.toISOString().split('T')[0],
+      receivedDate: selectedDate.toISOString().split('T')[0],
     };
 
     if (onAddIncomeStream) {
-      onAddIncomeStream(targetMemberId, streamPayload, monthKey);
+      onAddIncomeStream(targetMemberId, streamPayload, mKey);
     } else {
       try {
-        saveIncomeStreamToStorage(targetMemberId, streamPayload, monthKey, undefined, false);
+        const { stream: savedStream } = saveIncomeStreamToStorage(targetMemberId, streamPayload, mKey, group?.id, false);
+        setActiveExtraStream(savedStream);
       } catch (e) {
         console.error('Error updating income stream:', e);
       }
     }
-
-    setActiveExtraStream(streamPayload);
 
     onAddTransaction({
       description: noteText ? `${activeExtraStream.name} - ${noteText}` : activeExtraStream.name,
@@ -235,6 +233,8 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
       splitType: 'individual',
       isRecurrent: false,
       aiCategorized: false,
+      incomeStreamId: activeExtraStream.id,
+      incomeMonthKey: mKey,
     });
 
     setShowSuccessToast(true);
@@ -252,8 +252,7 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
     const updatedHistory = currentHistory.filter((h) => h.id !== entryId);
     const newTotal = Math.max(0, (activeExtraStream.amount || 0) - entryToDelete.amount);
     const newLast = updatedHistory.length > 0 ? updatedHistory[0].amount : 0;
-    const now = new Date();
-    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const mKey = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`;
     const targetMemberId = activeTargetMember.id;
 
     const updatedStream: IncomeStream = {
@@ -266,19 +265,18 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
     };
 
     if (onAddIncomeStream) {
-      onAddIncomeStream(targetMemberId, updatedStream, monthKey);
+      onAddIncomeStream(targetMemberId, updatedStream, mKey);
     } else {
-      saveIncomeStreamToStorage(targetMemberId, updatedStream, monthKey, undefined, false);
+      const { stream: savedStream } = saveIncomeStreamToStorage(targetMemberId, updatedStream, mKey, group?.id, false);
+      setActiveExtraStream(savedStream);
     }
-
-    setActiveExtraStream(updatedStream);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (transactionType === 'income') return;
 
-    const numericAmount = parseFloat(amount.replace(',', '.')) || 0;
+    const numericAmount = parseCurrencyBR(amount);
     if (numericAmount <= 0) return;
 
     const finalDescription = description.trim() || (
@@ -572,7 +570,7 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
                         key={preset}
                         type="button"
                         onClick={() => {
-                          const current = parseFloat(amount.replace(',', '.')) || 0;
+                          const current = parseCurrencyBR(amount);
                           const val = current + preset;
                           setAmount(val % 1 === 0 ? val.toString() : val.toFixed(2).replace('.', ','));
                         }}
@@ -980,7 +978,7 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
                               key={preset}
                               type="button"
                               onClick={() => {
-                                const cur = parseFloat(registerAmountInput.replace(',', '.')) || 0;
+                                const cur = parseCurrencyBR(registerAmountInput);
                                 const nVal = cur + preset;
                                 setRegisterAmountInput(nVal.toString());
                               }}
@@ -1222,7 +1220,7 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
                   const targetMemberId = activeTargetMember.id;
                   const now = new Date();
                   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-                  deleteIncomeStreamFromStorage(targetMemberId, streamToDelete.id, monthKey, false);
+                  deleteIncomeStreamFromStorage(targetMemberId, streamToDelete.id, monthKey, 'all');
                   setStreamToDelete(null);
                   setActiveExtraStream(null);
                 }}
@@ -1247,15 +1245,14 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
             setEditingStream(null);
           }}
           onAddIncomeStream={(memberId, streamData, monthKey) => {
-            const now = new Date();
-            const mKey = monthKey || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+            const mKey = monthKey || `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`;
             let createdStreamId = streamData.id;
 
             if (onAddIncomeStream) {
               onAddIncomeStream(memberId, streamData, mKey);
             } else {
-              const saved = saveIncomeStreamToStorage(memberId, streamData, mKey);
-              createdStreamId = saved.id;
+              const { stream: savedStream } = saveIncomeStreamToStorage(memberId, streamData, mKey, group?.id);
+              createdStreamId = savedStream.id;
             }
 
             setShowAddIncomeModal(false);
@@ -1287,6 +1284,8 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
             handleOpenStreamModal(stream);
           }
         }}
+        monthKey={`${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`}
+        groupId={group?.id}
       />
 
       {/* MODAL DE SELEÇÃO DE DATA COM CALENDÁRIO */}

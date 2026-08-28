@@ -29,12 +29,14 @@ import {
 } from 'lucide-react';
 import { FamilyMember, IncomeStream, IncomeNature, Transaction, IncomeHistoryEntry } from '../types';
 import { formatIncomeDueDate } from './CoupleSplitView';
-import { getStreamAmount, formatMemberName, recoverIncomesFromTransactions } from '../utils/incomeUtils';
+import { getStreamAmount, formatMemberName, cleanGhostIncomeStreams, recoverIncomesFromTransactions } from '../utils/incomeUtils';
 
 interface MemberIncomeDetailViewProps {
   member: FamilyMember;
+  memberIndex?: number;
   avatarEmoji?: string;
   streams: IncomeStream[];
+  getMemberIncomes?: (memberId: string, index: number, targetMonthKey?: string) => IncomeStream[];
   initialDate?: Date;
   onClose: () => void;
   onAddStream: (targetMonthKey?: string) => void;
@@ -50,13 +52,16 @@ interface MemberIncomeDetailViewProps {
     targetMonthKey?: string
   ) => void;
   onAddTransaction?: (transaction: Omit<Transaction, 'id' | 'date'>) => void;
+  onDeleteIncomeEntryTransaction?: (streamId: string, monthKey: string, amount: number) => void;
   initialSelectedStream?: IncomeStream | null;
 }
 
 export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
   member,
+  memberIndex = 0,
   avatarEmoji,
   streams,
+  getMemberIncomes,
   initialDate,
   onClose,
   onAddStream,
@@ -65,22 +70,12 @@ export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
   onToggleReceived,
   onUpdateStreamAmount,
   onAddTransaction,
+  onDeleteIncomeEntryTransaction,
   initialSelectedStream,
 }) => {
   const [selectedDate, setSelectedDate] = useState<Date>(() => initialDate || new Date());
   const [filterNature, setFilterNature] = useState<'all' | 'fixed' | 'vales' | 'extra' | 'received' | 'pending'>('all');
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
-  const [incomesVersion, setIncomesVersion] = useState(0);
-
-  useEffect(() => {
-    const handleUpdate = () => setIncomesVersion((v) => v + 1);
-    window.addEventListener('wepay_incomes_updated', handleUpdate);
-    window.addEventListener('storage', handleUpdate);
-    return () => {
-      window.removeEventListener('wepay_incomes_updated', handleUpdate);
-      window.removeEventListener('storage', handleUpdate);
-    };
-  }, []);
 
   const handlePrevMonth = () => {
     setSelectedDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
@@ -116,54 +111,11 @@ export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
 
   // Dynamic streams for currently viewed month
   const activeStreamsForMonth = useMemo(() => {
-    try {
-      const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
-      let map = saved ? JSON.parse(saved) : {};
-
-      try {
-        const savedTxs = localStorage.getItem('wepay_transactions');
-        if (savedTxs) {
-          const parsedTxs = JSON.parse(savedTxs);
-          if (Array.isArray(parsedTxs) && parsedTxs.length > 0) {
-            map = recoverIncomesFromTransactions(map, parsedTxs, [member]);
-          }
-        }
-      } catch (e) {}
-
-      if (map?.[detailMonthKey]?.[member.id] && Array.isArray(map[detailMonthKey][member.id]) && map[detailMonthKey][member.id].length > 0) {
-        return map[detailMonthKey][member.id];
-      }
-      if (map?.[member.id] && Array.isArray(map[member.id]) && map[member.id].length > 0) {
-        return map[member.id];
-      }
-
-      // Candidate search by name or common keys
-      const monthObj = map?.[detailMonthKey] || {};
-      const candidateKeys = Array.from(new Set([...Object.keys(monthObj), ...Object.keys(map || {})])).filter(
-        (k) => !k.match(/^\d{4}-\d{2}$/)
-      );
-      const memName = (member?.name || '').toLowerCase().trim();
-      for (const k of candidateKeys) {
-        const kLow = k.toLowerCase().trim();
-        if (
-          (memName && kLow.includes(memName)) ||
-          (memName.includes('josy') && kLow.includes('josy')) ||
-          (memName.includes('josefa') && (kLow.includes('josefa') || kLow.includes('josy'))) ||
-          (memName.includes('thiago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
-          (memName.includes('thyago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
-          (kLow.includes('m2') && memName.includes('josy'))
-        ) {
-          const found = monthObj[k] || map[k];
-          if (Array.isArray(found) && found.length > 0) {
-            return found;
-          }
-        }
-      }
-    } catch (e) {
-      console.error(e);
+    if (getMemberIncomes) {
+      return getMemberIncomes(member.id, memberIndex, detailMonthKey);
     }
     return streams;
-  }, [detailMonthKey, member.id, member.name, streams, incomesVersion]);
+  }, [getMemberIncomes, member.id, memberIndex, detailMonthKey, streams]);
 
   // Ensure unique streams to prevent duplicate keys and duplicate metrics
   const uniqueStreams = useMemo(() => {
@@ -203,7 +155,14 @@ export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
     if (filterNature === 'vales') return stream.nature === 'vales';
     if (filterNature === 'extra') return stream.nature === 'extra';
     if (filterNature === 'received') return stream.nature === 'extra' ? (stream.amount || 0) > 0 : stream.received;
-    if (filterNature === 'pending') return stream.nature === 'extra' ? (stream.amount || 0) === 0 : !stream.received;
+    if (filterNature === 'pending') {
+      if (stream.nature === 'extra') {
+        const target = stream.targetGoal || 0;
+        const current = stream.amount || 0;
+        return target > 0 ? current < target : !stream.received;
+      }
+      return !stream.received;
+    }
     return true;
   });
 
@@ -220,13 +179,14 @@ export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
 
   const getDisplayDate = (stream: IncomeStream) => {
     if (stream.receivedDate) {
-      if (stream.receivedDate.includes('-')) {
-        const parts = stream.receivedDate.split('-');
+      const cleanDate = stream.receivedDate.split('T')[0];
+      if (cleanDate.includes('-')) {
+        const parts = cleanDate.split('-');
         if (parts.length === 3) {
           return `${parts[2]}/${parts[1]}`;
         }
       }
-      return stream.receivedDate;
+      return cleanDate;
     }
     const today = new Date();
     const d = String(today.getDate()).padStart(2, '0');
@@ -959,6 +919,9 @@ export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
                                     const newTotal = Math.max(0, (actionModalStream.amount || 0) - item.amount);
                                     const newLast = updatedHistory.length > 0 ? updatedHistory[0].amount : 0;
                                     onUpdateStreamAmount(actionModalStream.id, newTotal, updatedHistory[0]?.notes || '', updatedHistory, newLast, detailMonthKey);
+                                    if (onDeleteIncomeEntryTransaction) {
+                                      onDeleteIncomeEntryTransaction(actionModalStream.id, detailMonthKey, item.amount);
+                                    }
                                     setActionModalStream((prev) =>
                                       prev
                                         ? {
@@ -1213,6 +1176,9 @@ export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
                                         const newTotal = Math.max(0, (actionModalStream.amount || 0) - lastEntry.amount);
                                         const newLast = updatedHistory.length > 0 ? updatedHistory[0].amount : 0;
                                         onUpdateStreamAmount(actionModalStream.id, newTotal, updatedHistory[0]?.notes || '', updatedHistory, newLast, detailMonthKey);
+                                        if (onDeleteIncomeEntryTransaction) {
+                                          onDeleteIncomeEntryTransaction(actionModalStream.id, detailMonthKey, lastEntry.amount);
+                                        }
                                         setActionModalStream((prev) =>
                                           prev
                                             ? {
@@ -1227,6 +1193,9 @@ export const MemberIncomeDetailView: React.FC<MemberIncomeDetailViewProps> = ({
                                         );
                                       } else {
                                         onUpdateStreamAmount(actionModalStream.id, 0, '', [], 0, detailMonthKey);
+                                        if (onDeleteIncomeEntryTransaction) {
+                                          onDeleteIncomeEntryTransaction(actionModalStream.id, detailMonthKey, actionModalStream.amount || lastEntry.amount);
+                                        }
                                         setActionModalStream((prev) => (prev ? { ...prev, amount: 0, received: false, notes: '', history: [], lastEntryAmount: 0 } : null));
                                       }
                                       setShowDeleteConfirm(false);

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { FamilyMember, CategoryType, SplitType, Transaction } from '../types';
 import { CATEGORIES_META } from '../data/suggestions';
 import { getMemberIncomeOptions, saveIncomeStreamToStorage, formatMemberName } from '../utils/incomeUtils';
+import { parseCurrencyBR } from '../utils/currencyUtils';
 import { AddIncomeModal } from './AddIncomeModal';
 import { DatePickerModal } from './DatePickerModal';
 import { 
@@ -97,7 +98,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const numericAmount = parseFloat(amount.replace(',', '.')) || 0;
+    const numericAmount = parseCurrencyBR(amount);
     if (numericAmount <= 0) return;
 
     const finalDescription = description.trim() || (
@@ -106,27 +107,52 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
     );
 
     if (transactionType === 'income') {
-      const now = new Date();
-      const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const now = new Date(
+        selectedDate.getFullYear(),
+        selectedDate.getMonth(),
+        selectedDate.getDate(),
+        12, 0, 0
+      );
+      const monthKey = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`;
       const matchedStream = incomeOptions.find((opt) => opt.name === category);
-      if (matchedStream && matchedStream.id) {
-        const streamPayload = {
-          id: matchedStream.id,
-          name: matchedStream.name,
-          amount: numericAmount,
-          nature: (matchedStream.nature || 'extra') as any,
-          icon: matchedStream.icon,
-          notes: description.trim() || undefined,
-          isAccumulate: true,
-          received: true,
-          receivedDate: now.toISOString().split('T')[0],
-        };
-        try {
-          saveIncomeStreamToStorage(paidByMemberId, streamPayload, monthKey, undefined, false);
-        } catch (err) {
-          console.error('Error accumulating income in storage:', err);
-        }
+      const streamId = matchedStream?.id || `stream_${paidByMemberId}_${(category || 'extra').toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+
+      const streamPayload = {
+        id: streamId,
+        name: matchedStream?.name || category || 'Renda Extra',
+        amount: numericAmount,
+        nature: (matchedStream?.nature || 'extra') as any,
+        icon: matchedStream?.icon || '💵',
+        notes: description.trim() || undefined,
+        isAccumulate: true,
+        received: true,
+        receivedDate: now.toISOString().split('T')[0],
+      };
+      try {
+        saveIncomeStreamToStorage(paidByMemberId, streamPayload, monthKey, undefined, false);
+      } catch (err) {
+        console.error('Error accumulating income in storage:', err);
       }
+
+      const txDate = now.toISOString();
+
+      onAddTransaction({
+        description: finalDescription,
+        amount: numericAmount,
+        category: (category as CategoryType) || 'Outros',
+        categoryIcon: 'TrendingUp',
+        type: 'income',
+        paidByMemberId,
+        splitType,
+        isRecurrent: false,
+        aiCategorized: false,
+        date: txDate,
+        incomeStreamId: streamId,
+        incomeMonthKey: monthKey,
+      });
+
+      onClose();
+      return;
     }
 
     const txDate = new Date(
@@ -139,9 +165,9 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
     onAddTransaction({
       description: finalDescription,
       amount: numericAmount,
-      category: (transactionType === 'income') ? ((category as CategoryType) || 'Outros') : category,
-      categoryIcon: (transactionType === 'income') ? 'TrendingUp' : (CATEGORIES_META[category]?.icon || 'ShoppingCart'),
-      type: (transactionType === 'income') ? 'income' : 'expense',
+      category: category,
+      categoryIcon: CATEGORIES_META[category]?.icon || 'ShoppingCart',
+      type: 'expense',
       paidByMemberId,
       splitType,
       isRecurrent: transactionType === 'fixed',
@@ -306,7 +332,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                         key={preset}
                         type="button"
                         onClick={() => {
-                          const current = parseFloat(amount.replace(',', '.')) || 0;
+                          const current = parseCurrencyBR(amount);
                           const val = current + preset;
                           setAmount(val % 1 === 0 ? val.toString() : val.toFixed(2).replace('.', ','));
                         }}
@@ -514,7 +540,8 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
             }
             onClose={() => setShowAddIncomeModal(false)}
             onAddIncomeStream={(memberId, streamData, monthKey) => {
-              const mKey = monthKey || '2026-08';
+              const now = new Date();
+              const mKey = monthKey || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
               saveIncomeStreamToStorage(memberId, streamData, mKey);
 
               if (onAddIncomeStream) {

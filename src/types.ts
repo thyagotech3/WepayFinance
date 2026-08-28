@@ -18,6 +18,9 @@ export interface IncomeStream {
   received?: boolean;
   receivedDate?: string;
   isRecurrent?: boolean;
+  startDate?: string; // YYYY-MM
+  endDate?: string;   // YYYY-MM
+  excludedMonths?: string[]; // Array of YYYY-MM where this recurrent income should NOT appear
   targetGoal?: number;
   icon?: string;
   calculationType?: 'manual' | 'auto';
@@ -43,13 +46,15 @@ export interface FixedExpenseItem {
   category: CategoryType;
   paidByMemberId: string;
   dueDate: string; // e.g., '10' or '2026-08-10'
-  isPaid: boolean;
+  isPaid?: boolean; // Legacy
+  paidMonths?: string[]; // Array of YYYY-MM where this expense was paid
   recurrenceType: RecurrenceType;
   monthKey: string; // YYYY-MM
   notes?: string;
-  startMonthKey?: string; // YYYY-MM (installment start)
-  endMonthKey?: string; // YYYY-MM (installment end)
-  totalInstallments?: number; // total number of installments (e.g. 10)
+  startMonthKey?: string; // YYYY-MM
+  endMonthKey?: string; // YYYY-MM
+  totalInstallments?: number; 
+  excludedMonths?: string[]; // Array of YYYY-MM where this recurrent expense should NOT appear
 }
 
 export type SplitType = 'equal' | 'individual' | 'proportional';

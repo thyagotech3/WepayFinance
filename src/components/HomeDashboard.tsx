@@ -2,23 +2,19 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { FamilyGroup, FamilyMember, Transaction, FixedExpenseItem, PiggyBankItem } from '../types';
 import { INITIAL_FIXED_EXPENSES, INITIAL_PIGGY_BANKS } from '../data/mockInitialData';
 import { getMonthlyIncomeData, formatMemberName } from '../utils/incomeUtils';
+import { useAppStore } from '../store/useAppStore';
 import { 
   Plus, Wallet, Calendar, Users, ChevronRight, ChevronLeft, Play,
   ExternalLink, Scale, Clock, TrendingUp, Palmtree, ShieldCheck,
   Tv, Home as HomeIcon, Wifi, Dumbbell, Heart, Target, ShoppingCart, PieChart,
   PiggyBank, Shield, FileText, ArrowUpRight, Gift, Plane, GraduationCap, Maximize2, Car,
-  HelpCircle, CheckCircle2, Sparkles, X
+  HelpCircle, CheckCircle2, Sparkles, X, AlertTriangle
 } from 'lucide-react';
 import { ResponsiveContainer, PieChart as RePieChart, Pie, Cell, Tooltip } from 'recharts';
 import { BalanceAIInsightCard } from './BalanceAIInsightCard';
+import { getInstallmentInfo } from './FixedExpenseModal';
 
 interface HomeDashboardProps {
-  group: FamilyGroup;
-  currentMember: FamilyMember;
-  members: FamilyMember[];
-  transactions: Transaction[];
-  fixedExpenses?: FixedExpenseItem[];
-  cofrinhos?: PiggyBankItem[];
   onAddTransaction: (transaction: Omit<Transaction, 'id' | 'date'>) => void;
   onDeleteTransaction: (id: string) => void;
   onOpenExpenseModal: () => void;
@@ -29,12 +25,6 @@ interface HomeDashboardProps {
 }
 
 export const HomeDashboard: React.FC<HomeDashboardProps> = ({
-  group,
-  currentMember,
-  members,
-  transactions,
-  fixedExpenses: propFixedExpenses,
-  cofrinhos: propCofrinhos,
   onAddTransaction,
   onDeleteTransaction,
   onOpenExpenseModal,
@@ -43,6 +33,10 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   onOpenFullBalance,
   onOpenCofrinhos,
 }) => {
+  const { group, currentMemberId, transactions, fixedExpenses: propFixedExpenses, piggyBanks: propCofrinhos } = useAppStore();
+  
+  const members = group?.members || [];
+  const currentMember = members.find((m) => m.id === currentMemberId) || members[0];
   // Current selected date for month navigation
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
   const [incomesVersion, setIncomesVersion] = useState<number>(0);
@@ -93,15 +87,13 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
     return [];
   }, [propCofrinhos]);
 
-  // Active valid transactions filtered for the selected month if dates are assigned
+  // Active valid transactions filtered strictly for the selected month
   const activeTransactions = useMemo(() => {
     const valid = transactions.filter((t) => t.status !== 'reverted' && t.status !== 'deleted');
-    const filtered = valid.filter((t) => {
-      if (!t.date) return true;
+    return valid.filter((t) => {
+      if (!t.date) return false;
       return t.date.startsWith(selectedMonthKey);
     });
-    // If no transactions exist specifically for this month but valid exist, fallback or show filtered
-    return filtered.length > 0 ? filtered : valid;
   }, [transactions, selectedMonthKey]);
 
   // Financial calculations
@@ -134,23 +126,103 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
       try { return JSON.parse(saved); } catch (e) {}
     }
     return [];
-  }, [propFixedExpenses, transactions]);
+  }, [propFixedExpenses, transactions, incomesVersion]);
 
-  const totalFixedPaid = fixedExpensesList
+  // Filter fixed expenses for the selected month
+  const currentMonthFixedExpenses = useMemo(() => {
+    return fixedExpensesList.filter((item) => {
+      if (item.recurrenceType === 'single_month') {
+        return item.monthKey === selectedMonthKey;
+      }
+      if (item.recurrenceType === 'installment') {
+        const info = getInstallmentInfo(item, selectedMonthKey);
+        return info ? info.isActiveInMonth : item.monthKey === selectedMonthKey;
+      }
+      // Fixed & Variable roll over
+      return true;
+    });
+  }, [fixedExpensesList, selectedMonthKey]);
+
+  // Helper to calculate days diff for an item in selected month
+  const getItemDueDiffDays = (item: FixedExpenseItem) => {
+    const match = String(item.dueDate || '').match(/\d+/);
+    const dayNum = match ? parseInt(match[0], 10) : 10;
+    const [yearStr, monthStr] = selectedMonthKey.split('-');
+    const year = parseInt(yearStr, 10) || new Date().getFullYear();
+    const month = (parseInt(monthStr, 10) || (new Date().getMonth() + 1)) - 1;
+
+    const dueDateObj = new Date(year, month, dayNum);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const diffTime = dueDateObj.getTime() - today.getTime();
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  };
+
+  // Smart due date categorization for unpaid items
+  const unpaidAnalysis = useMemo(() => {
+    const unpaid = currentMonthFixedExpenses.filter((e) => !e.isPaid);
+    const overdueList: FixedExpenseItem[] = [];
+    const dueTodayList: FixedExpenseItem[] = [];
+    const dueWithin10DaysList: { item: FixedExpenseItem; diff: number }[] = [];
+    const dueAfter10DaysList: { item: FixedExpenseItem; diff: number }[] = [];
+
+    unpaid.forEach((item) => {
+      const diff = getItemDueDiffDays(item);
+      if (diff < 0) {
+        overdueList.push(item);
+      } else if (diff === 0) {
+        dueTodayList.push(item);
+      } else if (diff <= 10) {
+        dueWithin10DaysList.push({ item, diff });
+      } else {
+        dueAfter10DaysList.push({ item, diff });
+      }
+    });
+
+    dueWithin10DaysList.sort((a, b) => a.diff - b.diff);
+    dueAfter10DaysList.sort((a, b) => a.diff - b.diff);
+
+    const nearestDaysWithin10 = dueWithin10DaysList.length > 0 ? dueWithin10DaysList[0].diff : null;
+    const nearestDaysAfter10 = dueAfter10DaysList.length > 0 ? dueAfter10DaysList[0].diff : null;
+
+    return {
+      overdue: overdueList,
+      dueToday: dueTodayList,
+      dueWithin10Days: dueWithin10DaysList.map((d) => d.item),
+      nearestDaysWithin10,
+      dueAfter10Days: dueAfter10DaysList.map((d) => d.item),
+      nearestDaysAfter10,
+      totalUnpaid: unpaid.length,
+    };
+  }, [currentMonthFixedExpenses, selectedMonthKey]);
+
+  const currentMonthPT = useMemo(() => {
+    return selectedDate.toLocaleDateString('pt-BR', { month: 'long' }).replace(/^\w/, (c) => c.toUpperCase());
+  }, [selectedDate]);
+
+  const totalFixedPaid = currentMonthFixedExpenses
     .filter((e) => e.isPaid)
     .reduce((acc, e) => acc + e.amount, 0);
 
-  const totalFixedToPay = fixedExpensesList
+  const totalFixedToPay = currentMonthFixedExpenses
     .filter((e) => !e.isPaid)
     .reduce((acc, e) => acc + e.amount, 0);
 
   const totalFixedProgrammed = totalFixedPaid + totalFixedToPay;
 
-  // Saldo Atual = Renda total - Gastos
-  const currentBalance = totalWalletIncome - totalExpenses;
+  // For future months, "Gastos do Mês" becomes "Gastos Previstos" (sum of fixed expenses for that month)
+  const displayExpenses = isCurrentRealMonth ? totalExpenses : totalFixedProgrammed;
 
-  // Saldo Após quitação das dívidas = Renda total - Gastos - Contas pendentes
-  const balanceAfterBills = totalWalletIncome - totalExpenses - totalFixedToPay;
+  // Saldo Atual (Mês atual) vs Projeção do Mês (Meses futuros)
+  const currentBalance = isCurrentRealMonth
+    ? ((incomeData.totalReceivedIncome && incomeData.totalReceivedIncome > 0)
+        ? incomeData.totalReceivedIncome - totalExpenses
+        : totalWalletIncome - totalExpenses)
+    : (totalWalletIncome - totalFixedProgrammed - totalExpenses);
+
+  const primaryBalanceTitle = isCurrentRealMonth ? 'Saldo Atual' : `Projeção de ${currentMonthPT}`;
+  const displayExpensesTitle = isCurrentRealMonth ? 'Gastos do Mês' : 'Gastos Previstos';
 
   // Reusable card renderer matching Balanço Geral panel style
   const renderBalanceCard = ({
@@ -217,8 +289,8 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   };
 
   // Couple split calculations
-  const member1 = members[0] || { id: 'm1', name: 'Membro 1', color: '#3b82f6' };
-  const member2 = members[1] || { id: 'm2', name: 'Membro 2', color: '#ec4899' };
+  const member1 = members[0] || { id: 'm1', name: 'Membro 1', color: '#3b82f6', role: 'admin' as const, income: 0 };
+  const member2 = members[1] || { id: 'm2', name: 'Membro 2', color: '#ec4899', role: 'member' as const, income: 0 };
 
   const m1PaidExpenses = activeTransactions
     .filter((t) => t.type === 'expense' && t.paidByMemberId === member1.id)
@@ -418,9 +490,9 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
 
               {/* Grid de Cards de Balanço */}
               <div className="grid grid-cols-2 gap-2 sm:gap-3">
-                {/* 1. TOPO: SALDO ATUAL (LINHA INTEIRA) */}
+                {/* 1. TOPO: SALDO ATUAL / PROJEÇÃO DO MÊS (LINHA INTEIRA) */}
                 {renderBalanceCard({
-                  title: 'Saldo Atual',
+                  title: primaryBalanceTitle,
                   value: currentBalance,
                   icon: (
                     <button
@@ -430,8 +502,8 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                         setActiveExplanation((prev) => (prev === 'saldo_atual' ? null : 'saldo_atual'));
                       }}
                       className="p-1 -mr-1 -my-1 rounded-full text-purple-400 hover:text-purple-300 hover:bg-purple-500/15 active:scale-90 transition-all cursor-pointer"
-                      title="Ver explicação sobre o Saldo Atual"
-                      aria-label="Explicação Saldo Atual"
+                      title="Ver explicação sobre o saldo"
+                      aria-label="Explicação Saldo"
                     >
                       <HelpCircle className="w-4 h-4" />
                     </button>
@@ -442,7 +514,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   isNegativeAllowed: true,
                 })}
 
-                {/* CARD DE EXPLICAÇÃO DO SALDO ATUAL (ABERTO AO CLICAR NO ?) */}
+                {/* CARD DE EXPLICAÇÃO DO SALDO ATUAL / PROJEÇÃO (ABERTO AO CLICAR NO ?) */}
                 {activeExplanation === 'saldo_atual' && (
                   <div className="col-span-2 bg-[#171536]/95 border border-purple-500/50 rounded-2xl p-3 sm:p-3.5 text-xs text-purple-100 flex items-start justify-between gap-3 shadow-xl transition-all">
                     <div className="flex items-start gap-2.5">
@@ -451,10 +523,12 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                       </div>
                       <div className="space-y-0.5 text-left">
                         <span className="text-[11px] font-bold text-purple-300 block uppercase tracking-wider">
-                          O que é o Saldo Atual?
+                          O que é este valor?
                         </span>
                         <p className="text-xs text-slate-200 leading-relaxed font-medium">
-                          O saldo atual é o que você recebeu, menos o que você gastou e pagou.
+                          {isCurrentRealMonth
+                            ? 'O saldo atual é o que você recebeu, menos o que você gastou e pagou.'
+                            : 'A projeção do mês calcula a renda prevista menos os gastos e despesas fixas previstos para o período.'}
                         </p>
                       </div>
                     </div>
@@ -479,10 +553,10 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   borderAccent: 'border-slate-800',
                 })}
 
-                {/* Gastos do Mês */}
+                {/* Gastos do Mês / Gastos Previstos */}
                 {renderBalanceCard({
-                  title: 'Gastos do Mês',
-                  value: totalExpenses,
+                  title: displayExpensesTitle,
+                  value: displayExpenses,
                   icon: <ShoppingCart className="w-3.5 h-3.5 text-rose-400 shrink-0" />,
                   colorClass: 'text-rose-400',
                   borderAccent: 'border-slate-800',
@@ -799,6 +873,89 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                 </span>
               </div>
             </div>
+
+            {/* Smart due date notification banner matching FixedExpensesView */}
+            {(() => {
+              // Priority 1: Contas Vencidas (Vermelho)
+              if (unpaidAnalysis.overdue.length > 0) {
+                const count = unpaidAnalysis.overdue.length;
+                return (
+                  <button
+                    type="button"
+                    onClick={onOpenFixedExpenses}
+                    className="w-full py-2 px-3 rounded-xl bg-rose-950/60 hover:bg-rose-900/80 border border-rose-500/40 text-rose-200 flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 animate-pulse" />
+                    <span className="truncate">
+                      Você tem <span className="underline underline-offset-2 font-black text-white font-mono">({count})</span> {count === 1 ? 'conta vencida' : 'contas vencidas'} em {currentMonthPT}
+                    </span>
+                  </button>
+                );
+              }
+
+              // Priority 2: Vence Hoje (Laranja)
+              if (unpaidAnalysis.dueToday.length > 0) {
+                const count = unpaidAnalysis.dueToday.length;
+                return (
+                  <button
+                    type="button"
+                    onClick={onOpenFixedExpenses}
+                    className="w-full py-2 px-3 rounded-xl bg-orange-950/60 hover:bg-orange-900/80 border border-orange-500/40 text-orange-200 flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-orange-400 shrink-0 animate-bounce" />
+                    <span className="truncate">
+                      Você tem <span className="underline underline-offset-2 font-black text-white font-mono">({count})</span> {count === 1 ? 'conta à vencer hoje' : 'contas à vencer hoje'}
+                    </span>
+                  </button>
+                );
+              }
+
+              // Priority 3: A Pagar em 10 dias ou menos (Laranja / Âmbar)
+              if (unpaidAnalysis.dueWithin10Days.length > 0) {
+                const days = unpaidAnalysis.nearestDaysWithin10 || 1;
+                return (
+                  <button
+                    type="button"
+                    onClick={onOpenFixedExpenses}
+                    className="w-full py-2 px-3 rounded-xl bg-orange-950/60 hover:bg-orange-900/80 border border-orange-500/40 text-orange-200 flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                    <span className="truncate">
+                      Você tem contas à vencer em <span className="underline underline-offset-2 font-black text-white font-mono">{days} {days === 1 ? 'dia' : 'dias'}</span>
+                    </span>
+                  </button>
+                );
+              }
+
+              // Priority 4: A Pagar depois de 10 dias no mês vigente (Azul)
+              if (unpaidAnalysis.dueAfter10Days.length > 0) {
+                const count = unpaidAnalysis.dueAfter10Days.length;
+                return (
+                  <button
+                    type="button"
+                    onClick={onOpenFixedExpenses}
+                    className="w-full py-2 px-3 rounded-xl bg-sky-950/60 hover:bg-sky-900/80 border border-sky-500/40 text-sky-200 flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    <span className="truncate">
+                      Você tem <span className="underline underline-offset-2 font-black text-white font-mono">({count})</span> {count === 1 ? 'conta a pagar ainda esse mês' : 'contas a pagar ainda esse mês'}
+                    </span>
+                  </button>
+                );
+              }
+
+              // All paid state (Verde discreto)
+              if (currentMonthFixedExpenses.length > 0) {
+                return (
+                  <div className="w-full py-2 px-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 flex items-center justify-center gap-2 text-xs font-bold">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Todas as contas deste mês estão quitadas!</span>
+                  </div>
+                );
+              }
+
+              return null;
+            })()}
           </div>
 
           {/* ================= GASTOS POR MEMBRO SUMMARY ================= */}

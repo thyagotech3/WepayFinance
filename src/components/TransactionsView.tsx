@@ -1,6 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { FamilyMember, Transaction, CategoryType } from '../types';
 import { formatMemberName } from '../utils/incomeUtils';
+import { parseCurrencyBR } from '../utils/currencyUtils';
+import { useAppStore } from '../store/useAppStore';
 import { 
   Search, Trash2, ShoppingCart, ArrowUpRight, ArrowDownRight, 
   History, ChevronLeft, ChevronRight, Calendar, Edit3, X,
@@ -11,12 +13,10 @@ import {
 } from 'lucide-react';
 
 interface TransactionsViewProps {
-  members: FamilyMember[];
-  currentMember: FamilyMember;
-  transactions: Transaction[];
   onDeleteTransaction: (id: string) => void;
   onUpdateTransaction?: (updatedTx: Transaction) => void;
   onOpenExpenseModal?: () => void;
+  onOpenIncomeStream?: (memberId: string, streamId: string, monthKey: string, streamName?: string) => void;
 }
 
 const CATEGORIES: CategoryType[] = [
@@ -44,13 +44,15 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
 };
 
 export const TransactionsView: React.FC<TransactionsViewProps> = ({
-  members,
-  currentMember,
-  transactions,
   onDeleteTransaction,
   onUpdateTransaction,
   onOpenExpenseModal,
+  onOpenIncomeStream,
 }) => {
+  const { group, currentMemberId, transactions } = useAppStore();
+  const members = group?.members || [];
+  const currentMember = members.find((m) => m.id === currentMemberId) || members[0];
+  
   // Current selected date for month navigation
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
   const [viewAllPeriods, setViewAllPeriods] = useState<boolean>(false);
@@ -172,6 +174,17 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
 
   // Open item detail / edit modal
   const handleOpenDetailModal = (tx: Transaction) => {
+    // If it's an income transaction (or linked to income stream) and onOpenIncomeStream is provided,
+    // open the unified income stream modal instead of the generic transaction modal.
+    const isIncomeTx = tx.type === 'income' || Boolean(tx.incomeStreamId);
+    if (isIncomeTx && onOpenIncomeStream) {
+      const memberId = tx.paidByMemberId || currentMember.id;
+      const monthKey = tx.incomeMonthKey || (tx.date ? tx.date.substring(0, 7) : `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`);
+      const streamId = tx.incomeStreamId || '';
+      onOpenIncomeStream(memberId, streamId, monthKey, tx.description);
+      return;
+    }
+
     setSelectedTxForDetail(tx);
     const dateFormatted = tx.date ? tx.date.split('T')[0] : new Date().toISOString().split('T')[0];
     setEditFormData({
@@ -194,7 +207,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
       return;
     }
 
-    const parsedAmount = parseFloat(editFormData.amount.replace(',', '.'));
+    const parsedAmount = parseCurrencyBR(editFormData.amount);
     if (isNaN(parsedAmount) || parsedAmount <= 0) {
       alert('Por favor, insira um valor válido maior que zero.');
       return;

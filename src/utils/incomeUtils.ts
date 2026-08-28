@@ -1,112 +1,279 @@
-import { FamilyMember, IncomeStream, FixedExpenseItem, Transaction } from '../types';
+import { FamilyMember, IncomeStream, IncomeNature, FixedExpenseItem, Transaction } from '../types';
 import { db, doc, getDoc, setDoc, sanitizeForFirestore } from '../lib/firebase';
 
-/**
- * Removes duplicate income entries that were already created by the old
- * auto-recovery bug (same member + same name + same amount showing up twice,
- * usually one real entry plus one "phantom" `rec_inc_*` entry).
- * Safe to run repeatedly — it only ever removes exact duplicates, never data.
- */
-export function dedupeIncomesMap(incomesMap: Record<string, any> = {}): Record<string, any> {
-  const result: Record<string, any> = { ...(incomesMap || {}) };
+export interface MonthlyIncomeResult {
+  totalFixedIncome: number;
+  totalValesIncome: number;
+  totalExtraIncome: number;
+  totalFamilyIncome: number; // Planejamento / Previsão total
+  totalReceivedIncome: number; // Efetivamente recebido em caixa
+  totalPendingIncome: number; // A receber
+  memberTotals: Record<string, { fixed: number; vales: number; extra: number; total: number; received: number }>;
+}
 
-  const cleanList = (list: IncomeStream[] = []): IncomeStream[] => {
-    const seen = new Map<string, IncomeStream>();
-    (Array.isArray(list) ? list : []).forEach((item) => {
-      if (!item) return;
-      const key = `${(item.name || '').trim().toLowerCase()}-${item.amount}`;
-      const existing = seen.get(key);
-      if (!existing) {
-        seen.set(key, item);
-        return;
-      }
-      // Prefer the "real" entry over a phantom rec_inc_* one auto-recovered
-      // from transaction history.
-      const existingIsPhantom = String(existing.id || '').startsWith('rec_inc_');
-      const itemIsPhantom = String(item.id || '').startsWith('rec_inc_');
-      if (existingIsPhantom && !itemIsPhantom) {
-        seen.set(key, item);
+/**
+ * Helper to get default icon for income stream by name
+ */
+export function getStreamIcon(name: string, customIcon?: string): string {
+  if (customIcon) return customIcon;
+  const lower = (name || '').toLowerCase();
+  if (lower.includes('salário') || lower.includes('salario')) return '💼';
+  if (lower.includes('vale') || lower.includes('refeição') || lower.includes('alimentação')) return '🍱';
+  if (lower.includes('uber') || lower.includes('99') || lower.includes('corrida') || lower.includes('motorista')) return '🚗';
+  if (lower.includes('comissão') || lower.includes('comissao') || lower.includes('bônus') || lower.includes('bonus')) return '🎁';
+  if (lower.includes('freelance') || lower.includes('freela') || lower.includes('tech') || lower.includes('dev')) return '💻';
+  if (lower.includes('invest') || lower.includes('dividendo')) return '💰';
+  if (lower.includes('consult') || lower.includes('consultoria')) return '📊';
+  return '💵';
+}
+
+/**
+ * Helper to check if a stream is valid for a specific month
+ */
+export function isStreamValidForMonth(stream: IncomeStream, monthKey: string): boolean {
+  if (!monthKey || !monthKey.match(/^\d{4}-\d{2}$/)) return true;
+  
+  // 1. Check startDate (if defined, must be >= startDate)
+  const startDate = stream.startDate || '';
+  if (startDate && startDate.match(/^\d{4}-\d{2}$/)) {
+    if (monthKey < startDate) return false;
+  }
+  
+  // 2. Check endDate (if defined, must be <= endDate)
+  const endDate = stream.endDate || '';
+  if (endDate && endDate.match(/^\d{4}-\d{2}$/)) {
+    if (monthKey > endDate) return false;
+  }
+  
+  // 3. Check excludedMonths (specific month exceptions)
+  if (stream.excludedMonths && stream.excludedMonths.includes(monthKey)) return false;
+  
+  // 4. If non-recurrent, it MUST match the startDate exactly
+  // If no startDate is present for a non-recurrent stream, we consider it invalid for ALL months
+  // to avoid it leaking into months where it doesn't belong.
+  if (stream.isRecurrent === false) {
+    if (startDate && startDate.match(/^\d{4}-\d{2}$/)) {
+      return monthKey === startDate;
+    }
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Pure function to calculate the new income map state after a deletion
+ */
+export function getUpdatedIncomeMapAfterDeletion(
+  incomesMap: Record<string, any>,
+  memberId: string,
+  streamId: string,
+  monthKey: string,
+  deleteMode: 'thisMonth' | 'future' | 'all'
+): Record<string, any> {
+  const updatedMap = { ...incomesMap };
+  const monthData = incomesMap[monthKey] || {};
+  const currentStreams = Array.isArray(monthData[memberId])
+    ? monthData[memberId]
+    : Array.isArray(incomesMap[memberId])
+    ? (incomesMap[memberId] as IncomeStream[])
+    : [];
+  const baseList = Array.isArray(incomesMap[memberId]) ? (incomesMap[memberId] as IncomeStream[]) : [];
+
+  if (deleteMode === 'all') {
+    // 1. Remove from base root list
+    updatedMap[memberId] = baseList.filter((s) => s.id !== streamId);
+
+    // 2. Remove from ALL month keys
+    Object.keys(updatedMap).forEach((k) => {
+      if (k.match(/^\d{4}-\d{2}$/) && updatedMap[k]?.[memberId]) {
+        updatedMap[k][memberId] = (updatedMap[k][memberId] as IncomeStream[]).filter((s) => s.id !== streamId);
       }
     });
+  } else if (deleteMode === 'future') {
+    // 1. Set endDate in root list (end at previous month)
+    const [year, month] = monthKey.split('-').map(Number);
+    const prevDate = new Date(year, month - 2, 1);
+    const prevMonthKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+    updatedMap[memberId] = baseList.map((s) => {
+      if (s.id === streamId) {
+        return { ...s, endDate: prevMonthKey };
+      }
+      return s;
+    });
+
+    // 2. Remove from current month and ALL future months
+    Object.keys(updatedMap).forEach((k) => {
+      if (k.match(/^\d{4}-\d{2}$/) && k >= monthKey && updatedMap[k]?.[memberId]) {
+        updatedMap[k][memberId] = (updatedMap[k][memberId] as IncomeStream[]).filter((s) => s.id !== streamId);
+      }
+    });
+  } else {
+    // deleteMode === 'thisMonth' (Exception)
+    // 1. Add exception to root list
+    updatedMap[memberId] = baseList.map((s) => {
+      if (s.id === streamId) {
+        const excluded = s.excludedMonths || [];
+        if (!excluded.includes(monthKey)) {
+          return { ...s, excludedMonths: [...excluded, monthKey] };
+        }
+      }
+      return s;
+    });
+
+    // 2. Remove ONLY from current month
+    updatedMap[monthKey] = {
+      ...monthData,
+      [memberId]: currentStreams.filter((s) => s.id !== streamId),
+    };
+  }
+
+  return updatedMap;
+}
+
+/**
+ * Cleans phantom income streams and normalizes entries without merging distinct IDs
+ */
+export function cleanGhostIncomeStreams(incomesMap: Record<string, any> = {}): Record<string, any> {
+  if (!incomesMap || typeof incomesMap !== 'object') return {};
+  const result: Record<string, any> = {};
+
+  const cleanList = (list: IncomeStream[] = []): IncomeStream[] => {
+    if (!Array.isArray(list)) return [];
+    const seen = new Map<string, IncomeStream>();
+
+    list.forEach((item, index) => {
+      if (!item || !item.name) return;
+      let rawName = item.name.trim();
+
+      // Normalize name by removing auto-generated prefixes or timestamp suffixes
+      let cleanName = rawName
+        .replace(/^\[renda\]\s*/i, '')
+        .replace(/\s*-\s*Recebimento.*$/i, '')
+        .replace(/\s*\([^)]*\)$/, '')
+        .trim();
+
+      if (!cleanName || cleanName.toLowerCase().startsWith('recebi dia')) {
+        cleanName = item.nature === 'extra' ? 'Renda Extra' : (item.nature === 'vales' ? 'Vale Alimentação' : 'Salário');
+      }
+
+      const nature: IncomeNature = item.nature || 'fixed';
+      const cleanIcon = getStreamIcon(cleanName, item.icon);
+      const stableId = item.id || `stream_${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${index}`;
+
+      const sanitizedItem: IncomeStream = {
+        ...item,
+        id: stableId,
+        name: cleanName,
+        nature,
+        icon: cleanIcon,
+        dueDate: item.dueDate || 's/ previsão',
+        isRecurrent: item.isRecurrent ?? (nature !== 'extra'),
+        received: item.received ?? false,
+      };
+
+      // Deduplicate strictly by stable ID
+      if (!seen.has(stableId)) {
+        seen.set(stableId, sanitizedItem);
+      } else {
+        const existing = seen.get(stableId)!;
+        const currentAmount = sanitizedItem.amount || 0;
+        const existingAmount = existing.amount || 0;
+        const mergedAmount = Math.max(existingAmount, currentAmount);
+        const isReceived = existing.received || sanitizedItem.received;
+        const mergedHistory = [...(existing.history || []), ...(sanitizedItem.history || [])];
+
+        seen.set(stableId, {
+          ...existing,
+          ...sanitizedItem,
+          amount: mergedAmount,
+          received: isReceived,
+          receivedDate: sanitizedItem.receivedDate || existing.receivedDate,
+          history: mergedHistory.length > 0 ? mergedHistory : undefined,
+          targetGoal: sanitizedItem.targetGoal || existing.targetGoal || mergedAmount,
+        });
+      }
+    });
+
     return Array.from(seen.values());
   };
 
-  Object.keys(result).forEach((key) => {
-    if (key.match(/^\d{4}-\d{2}$/)) {
-      const monthObj = result[key];
-      if (monthObj && typeof monthObj === 'object') {
-        const cleanedMonth: Record<string, IncomeStream[]> = {};
-        Object.keys(monthObj).forEach((memberId) => {
-          cleanedMonth[memberId] = cleanList(monthObj[memberId]);
-        });
-        result[key] = cleanedMonth;
-      }
-    } else if (Array.isArray(result[key])) {
-      result[key] = cleanList(result[key]);
+  Object.keys(incomesMap).forEach((k) => {
+    const val = incomesMap[k];
+    if (k.match(/^\d{4}-\d{2}$/) && typeof val === 'object' && val !== null) {
+      const monthObj: Record<string, IncomeStream[]> = {};
+      Object.keys(val).forEach((mKey) => {
+        if (Array.isArray(val[mKey])) {
+          monthObj[mKey] = cleanList(val[mKey]);
+        }
+      });
+      result[k] = monthObj;
+    } else if (Array.isArray(val)) {
+      result[k] = cleanList(val);
+    } else {
+      result[k] = val;
     }
   });
 
   return result;
 }
 
-export interface MonthlyIncomeResult {
-  totalFixedIncome: number;
-  totalValesIncome: number;
-  totalExtraIncome: number;
-  totalFamilyIncome: number;
-  memberTotals: Record<string, { fixed: number; vales: number; extra: number; total: number }>;
-}
-
 /**
- * Merges two incomes maps without losing any member or month entries
+ * Merges two incomes maps with respect for authoritative changes
  */
 export function deepMergeIncomesMaps(
   base: Record<string, any> = {},
   incoming: Record<string, any> = {}
 ): Record<string, any> {
-  const result: Record<string, any> = { ...base };
+  const cleanBase = cleanGhostIncomeStreams(base || {});
+  const cleanInc = cleanGhostIncomeStreams(incoming || {});
+  const result: Record<string, any> = { ...cleanBase };
 
   const mergeStreamArrays = (listA: IncomeStream[] = [], listB: IncomeStream[] = []): IncomeStream[] => {
     const map = new Map<string, IncomeStream>();
     (Array.isArray(listA) ? listA : []).forEach((item) => {
-      if (item && (item.id || item.name)) {
-        const key = item.id || `${item.name}-${item.dueDate || ''}`;
-        map.set(key, item);
+      if (item && item.id) {
+        map.set(item.id, item);
       }
     });
     (Array.isArray(listB) ? listB : []).forEach((item) => {
-      if (item && (item.id || item.name)) {
-        const key = item.id || `${item.name}-${item.dueDate || ''}`;
-        const existing = map.get(key);
+      if (item && item.id) {
+        const existing = map.get(item.id);
         if (existing) {
-          map.set(key, { ...existing, ...item });
+          map.set(item.id, { ...existing, ...item });
         } else {
-          map.set(key, item);
+          map.set(item.id, item);
         }
       }
     });
     return Array.from(map.values());
   };
 
-  const allKeys = new Set([...Object.keys(base || {}), ...Object.keys(incoming || {})]);
+  const allKeys = new Set([...Object.keys(cleanBase || {}), ...Object.keys(cleanInc || {})]);
 
   allKeys.forEach((key) => {
-    const valBase = base?.[key];
-    const valInc = incoming?.[key];
+    const valBase = cleanBase?.[key];
+    const valInc = cleanInc?.[key];
 
     if (key.match(/^\d{4}-\d{2}$/)) {
-      // Month container: { [memberId]: IncomeStream[] }
       const monthObjA = typeof valBase === 'object' && valBase !== null ? valBase : {};
       const monthObjB = typeof valInc === 'object' && valInc !== null ? valInc : {};
       const memberKeys = new Set([...Object.keys(monthObjA), ...Object.keys(monthObjB)]);
       const mergedMonth: Record<string, IncomeStream[]> = {};
       memberKeys.forEach((mKey) => {
-        mergedMonth[mKey] = mergeStreamArrays(monthObjA[mKey], monthObjB[mKey]);
+        // If incoming has explicit definition (even empty array), prefer it
+        if (Array.isArray(monthObjB[mKey])) {
+          mergedMonth[mKey] = monthObjB[mKey];
+        } else if (Array.isArray(monthObjA[mKey])) {
+          mergedMonth[mKey] = monthObjA[mKey];
+        }
       });
       result[key] = mergedMonth;
-    } else if (Array.isArray(valBase) || Array.isArray(valInc)) {
-      // Flat member stream list
-      result[key] = mergeStreamArrays(valBase, valInc);
+    } else if (Array.isArray(valInc)) {
+      result[key] = valInc;
+    } else if (Array.isArray(valBase)) {
+      result[key] = valBase;
     } else if (typeof valBase === 'object' || typeof valInc === 'object') {
       result[key] = { ...(valBase || {}), ...(valInc || {}) };
     } else {
@@ -114,7 +281,7 @@ export function deepMergeIncomesMaps(
     }
   });
 
-  return result;
+  return cleanGhostIncomeStreams(result);
 }
 
 export function recoverIncomesFromTransactions(
@@ -122,147 +289,113 @@ export function recoverIncomesFromTransactions(
   transactions: Transaction[] = [],
   members: FamilyMember[] = []
 ): Record<string, any> {
-  const result: Record<string, any> = { ...(incomesMap || {}) };
-
-  const maleMember = members[0] || { id: 'm1', name: 'Thiago' };
-  const femaleMember = members[1] || { id: 'm2', name: 'Josy' };
+  const result: Record<string, any> = cleanGhostIncomeStreams(incomesMap || {});
 
   transactions.forEach((tx) => {
     if (tx.status === 'deleted' || tx.status === 'reverted') return;
 
-    // Check if this transaction represents an income
+    // Strict check: only actual income transactions, never regular "Serviços" expenses!
     const isIncomeTx =
       tx.type === 'income' ||
-      tx.incomeStreamId ||
-      tx.category === 'Serviços' ||
-      tx.category === 'Salário' ||
-      tx.category === 'Renda Extra' ||
-      (tx.description && tx.description.toLowerCase().includes('[renda]'));
+      Boolean(tx.incomeStreamId) ||
+      (tx.description && tx.description.toLowerCase().startsWith('[renda]'));
 
     if (isIncomeTx && tx.amount > 0) {
       const nowKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
       const monthKey = tx.incomeMonthKey || (tx.date ? tx.date.substring(0, 7) : nowKey);
 
-      // Determine which member this income belongs to.
-      // IMPORTANT: trust the real paidByMemberId first (it's the ground truth
-      // set when the income was created). Only fall back to name-based guessing
-      // when it's missing, and NEVER default to a member when we can't tell —
-      // defaulting to Josy here was the root cause of income being silently
-      // duplicated under her whenever paidByMemberId didn't match exactly.
-      const txPaidBy = (tx.paidByMemberId || '').toLowerCase();
-      const txDesc = (tx.description || '').toLowerCase();
-      const txNotes = (tx.notes || '').toLowerCase();
-
-      let targetMember: FamilyMember | undefined = members.find(
-        (m) => m.id.toLowerCase() === txPaidBy
-      );
+      // Determine target member
+      let targetMember = members.find((m) => m.id === tx.paidByMemberId);
 
       if (!targetMember) {
-        if (
-          txDesc.includes('thiago') || txDesc.includes('thyago') ||
-          txNotes.includes('thiago') || txNotes.includes('thyago')
-        ) {
-          targetMember = maleMember;
-        } else if (
-          txDesc.includes('josy') || txDesc.includes('josefa') ||
-          txNotes.includes('josy') || txNotes.includes('josefa')
-        ) {
-          targetMember = femaleMember;
-        }
+        // Fallback: try to match by name dynamically
+        const txDesc = (tx.description || '').toLowerCase();
+        const txNotes = (tx.notes || '').toLowerCase();
+        targetMember = members.find((m) => {
+          const mName = m.name.toLowerCase().trim();
+          return mName && (txDesc.includes(mName) || txNotes.includes(mName));
+        });
       }
 
-      // Could not confidently determine the owner — skip this transaction
-      // instead of guessing. Guessing is what created duplicate "phantom"
-      // income entries in the first place.
-      if (!targetMember) return;
+      if (!targetMember) {
+        targetMember = members[0]; // fallback
+      }
+
+      if (!targetMember) return; // No members available
 
       const memberId = targetMember.id;
 
-      // Safety net: if a stream tied to this exact transaction already exists
-      // under ANY member (not just the one we just resolved), don't create a
-      // second copy under a different member — just leave the existing one alone.
-      const streamIdForTx = tx.incomeStreamId || `rec_inc_${tx.id}`;
-      const alreadyTrackedElsewhere = members.some((m) => {
-        if (m.id === memberId) return false;
-        const monthList = result[monthKey]?.[m.id];
-        const rootList = result[m.id];
-        return (
-          (Array.isArray(monthList) && monthList.some((s: IncomeStream) => s.id === streamIdForTx)) ||
-          (Array.isArray(rootList) && rootList.some((s: IncomeStream) => s.id === streamIdForTx))
-        );
-      });
-      if (alreadyTrackedElsewhere) return;
-
-      // Clean title
+      // Clean stream name
       let cleanName = tx.description
         .replace(/^\[renda\]\s*/i, '')
         .replace(/\s*-\s*Recebimento.*$/i, '')
         .replace(/\s*\([^)]*\)$/, '')
         .trim();
-      if (!cleanName) cleanName = 'Renda';
 
-      let nature: 'fixed' | 'vales' | 'extra' = 'fixed';
-      if (
-        cleanName.toLowerCase().includes('vale') ||
-        cleanName.toLowerCase().includes('refeição') ||
-        cleanName.toLowerCase().includes('alimentação')
-      ) {
+      if (!cleanName || cleanName.toLowerCase().startsWith('recebi dia')) {
+        if (tx.category === 'Salário' || cleanName.toLowerCase().includes('salár')) {
+          cleanName = 'Salário';
+        } else {
+          cleanName = 'Renda Extra';
+        }
+      }
+
+      let nature: IncomeNature = 'fixed';
+      const cleanLower = cleanName.toLowerCase();
+      if (cleanLower.includes('vale') || cleanLower.includes('refeição') || cleanLower.includes('alimentação')) {
         nature = 'vales';
       } else if (
-        cleanName.toLowerCase().includes('extra') ||
-        cleanName.toLowerCase().includes('freela') ||
-        cleanName.toLowerCase().includes('consult') ||
-        cleanName.toLowerCase().includes('bico') ||
-        cleanName.toLowerCase().includes('serviço')
+        cleanLower.includes('extra') ||
+        cleanLower.includes('freela') ||
+        cleanLower.includes('consult') ||
+        cleanLower.includes('bico') ||
+        cleanLower.includes('uber') ||
+        cleanLower.includes('99') ||
+        cleanLower.includes('comissão') ||
+        cleanLower.includes('bonus')
       ) {
         nature = 'extra';
       }
 
-      const streamId = tx.incomeStreamId || `rec_inc_${tx.id}`;
+      const deterministicId = tx.incomeStreamId || `stream_${memberId}_${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
 
-      // Ensure month container exists
       if (!result[monthKey]) result[monthKey] = {};
       const currentMonthList: IncomeStream[] = Array.isArray(result[monthKey][memberId]) ? [...result[monthKey][memberId]] : [];
-      const currentRootList: IncomeStream[] = Array.isArray(result[memberId]) ? [...result[memberId]] : [];
 
-      const existingIndex = currentMonthList.findIndex(
-        (s) => s.id === streamId || (s.name.trim().toLowerCase() === cleanName.trim().toLowerCase() && Math.abs((s.amount || 0) - tx.amount) < 0.01)
-      );
+      const existingIndex = currentMonthList.findIndex((s) => s.id === deterministicId || s.name.trim().toLowerCase() === cleanName.trim().toLowerCase());
 
       const recoveredStream: IncomeStream = {
-        id: streamId,
+        id: deterministicId,
         name: cleanName,
         amount: tx.amount,
         targetGoal: tx.amount,
         nature,
-        dueDate: '10',
-        isRecurrent: true,
+        icon: getStreamIcon(cleanName),
+        dueDate: 's/ previsão',
+        isRecurrent: nature !== 'extra',
+        startDate: monthKey, // Fix: Set startDate to transaction month
         received: true,
-        receivedDate: tx.date,
-        notes: tx.notes || 'Renda sincronizada do histórico',
+        receivedDate: tx.date ? tx.date.split('T')[0] : undefined,
+        notes: tx.notes || `Renda sincronizada`,
       };
 
       if (existingIndex >= 0) {
+        const existing = currentMonthList[existingIndex];
         currentMonthList[existingIndex] = {
-          ...currentMonthList[existingIndex],
-          amount: Math.max(currentMonthList[existingIndex].amount || 0, tx.amount),
+          ...existing,
+          amount: Math.max(existing.amount || 0, tx.amount),
           received: true,
-          receivedDate: tx.date || currentMonthList[existingIndex].receivedDate,
+          receivedDate: tx.date ? tx.date.split('T')[0] : (existing.receivedDate ? existing.receivedDate.split('T')[0] : undefined),
         };
       } else {
         currentMonthList.push(recoveredStream);
       }
 
       result[monthKey][memberId] = currentMonthList;
-
-      // Also ensure in root list if not present
-      if (!currentRootList.some((s) => s.id === streamId || s.name.trim().toLowerCase() === cleanName.trim().toLowerCase())) {
-        result[memberId] = [...currentRootList, recoveredStream];
-      }
     }
   });
 
-  return result;
+  return cleanGhostIncomeStreams(result);
 }
 
 /**
@@ -364,7 +497,11 @@ export function deepMergeFixedExpenses(
 /**
  * Synchronizes the entire incomes map to Firestore under the doc /incomes/{groupId}
  */
-export async function syncIncomesMapToFirestore(groupId?: string, customMap?: Record<string, any>) {
+export async function syncIncomesMapToFirestore(
+  groupId?: string,
+  customMap?: Record<string, any>,
+  isAuthoritative: boolean = false
+) {
   let targetGroupId = groupId;
   if (!targetGroupId && typeof window !== 'undefined') {
     try {
@@ -387,29 +524,31 @@ export async function syncIncomesMapToFirestore(groupId?: string, customMap?: Re
       }
     }
 
-    // Read current remote data first to merge both partners' incomes without overwriting
-    let remoteMap: Record<string, any> = {};
-    try {
-      const docSnap = await getDoc(doc(db, 'incomes', targetGroupId));
-      if (docSnap.exists() && docSnap.data().incomesMap) {
-        remoteMap = docSnap.data().incomesMap;
+    let mapToSave = cleanGhostIncomeStreams(localMap || {});
+
+    if (!isAuthoritative && !customMap) {
+      let remoteMap: Record<string, any> = {};
+      try {
+        const docSnap = await getDoc(doc(db, 'incomes', targetGroupId));
+        if (docSnap.exists() && docSnap.data().incomesMap) {
+          remoteMap = cleanGhostIncomeStreams(docSnap.data().incomesMap);
+        }
+      } catch (fetchErr) {
+        console.warn('Incomes remote read check notice:', fetchErr);
       }
-    } catch (fetchErr) {
-      console.warn('Incomes remote read check notice:', fetchErr);
+      mapToSave = deepMergeIncomesMaps(remoteMap, mapToSave);
     }
 
-    const merged = deepMergeIncomesMaps(remoteMap, localMap || {});
-
     if (typeof window !== 'undefined') {
-      localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(merged));
-      localStorage.setItem('wepay_monthly_incomes', JSON.stringify(merged));
+      localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(mapToSave));
+      localStorage.setItem('wepay_monthly_incomes', JSON.stringify(mapToSave));
       window.dispatchEvent(new Event('wepay_incomes_updated'));
     }
 
     await setDoc(
       doc(db, 'incomes', targetGroupId),
       sanitizeForFirestore({
-        incomesMap: merged,
+        incomesMap: mapToSave,
         groupId: targetGroupId,
         updatedAt: new Date().toISOString(),
       }),
@@ -535,11 +674,11 @@ export function getStreamAmount(stream: IncomeStream, monthKey?: string): number
 
 export function saveIncomeStreamToStorage(
   memberId: string,
-  streamData: Omit<IncomeStream, 'id'> & { id?: string; icon?: string; isAccumulate?: boolean },
+  streamData: Partial<IncomeStream> & { id?: string; name: string; isAccumulate?: boolean },
   monthKey: string = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
   groupId?: string,
   applyToAllMonths: boolean = true
-): IncomeStream {
+): { stream: IncomeStream; updatedMap: Record<string, any> } {
   let incomesMap: Record<string, any> = {};
   try {
     const saved = localStorage.getItem('wepay_couple_incomes_v3') || localStorage.getItem('wepay_monthly_incomes');
@@ -566,6 +705,13 @@ export function saveIncomeStreamToStorage(
 
   let updatedStream: IncomeStream;
   let updatedList: IncomeStream[];
+
+  const finalIsRecurrent = streamData.isRecurrent !== undefined 
+    ? streamData.isRecurrent 
+    : (existingIndex >= 0 ? (baseList[existingIndex].isRecurrent ?? true) : true);
+
+  // If not recurrent, we force applyToAllMonths to false to ensure it's a one-time entry
+  const shouldApplyToAll = finalIsRecurrent && applyToAllMonths;
 
   if (existingIndex >= 0) {
     const target = baseList[existingIndex];
@@ -606,7 +752,10 @@ export function saveIncomeStreamToStorage(
       targetGoal: streamData.targetGoal !== undefined ? streamData.targetGoal : target.targetGoal,
       nature: streamData.nature || target.nature,
       dueDate: streamData.dueDate || target.dueDate || 's/ previsão',
-      isRecurrent: streamData.isRecurrent !== undefined ? streamData.isRecurrent : (target.isRecurrent ?? true),
+      isRecurrent: finalIsRecurrent,
+      startDate: target.startDate || monthKey,
+      endDate: finalIsRecurrent ? (streamData.endDate || target.endDate) : monthKey, // Force end date if not recurrent
+      excludedMonths: streamData.excludedMonths || target.excludedMonths,
       icon: streamData.icon || target.icon,
       received: newAmount > 0 ? true : (streamData.received !== undefined ? streamData.received : target.received),
       receivedDate: streamData.receivedDate || target.receivedDate || new Date().toISOString().split('T')[0],
@@ -628,7 +777,9 @@ export function saveIncomeStreamToStorage(
       nature: streamData.nature || 'fixed',
       icon: streamData.icon,
       dueDate: streamData.dueDate || 's/ previsão',
-      isRecurrent: streamData.isRecurrent ?? true,
+      isRecurrent: finalIsRecurrent,
+      startDate: monthKey,
+      endDate: finalIsRecurrent ? undefined : monthKey, // Force end date if not recurrent
       received: streamData.received ?? false,
       receivedDate: streamData.receivedDate || (streamData.received ? new Date().toISOString().split('T')[0] : undefined),
       notes: streamData.notes,
@@ -642,18 +793,19 @@ export function saveIncomeStreamToStorage(
   }
 
   let updatedMap: Record<string, any>;
-  if (applyToAllMonths) {
-    // Helper to deduplicate stream list by ID
-    const dedupe = (list: IncomeStream[]) => {
-      const seen = new Set<string>();
-      return list.filter((item) => {
-        const key = item.id || `${item.name}-${item.dueDate}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    };
+  
+  // Helper to deduplicate stream list by ID
+  const dedupe = (list: IncomeStream[]) => {
+    const seen = new Set<string>();
+    return list.filter((item) => {
+      if (!item || !item.id) return false;
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  };
 
+  if (shouldApplyToAll) {
     const cleanUpdatedList = dedupe(updatedList);
 
     updatedMap = {
@@ -672,8 +824,7 @@ export function saveIncomeStreamToStorage(
         if (streamData.id) {
           updatedMap[k][memberId] = dedupe(futureList.map((s) => (s.id === streamData.id ? updatedStream : s)));
         } else {
-          // If future month didn't have it, add it uniquely
-          const alreadyHas = futureList.some((s) => s.id === updatedStream.id || s.name.trim().toLowerCase() === updatedStream.name.trim().toLowerCase());
+          const alreadyHas = futureList.some((s) => s.id === updatedStream.id);
           if (!alreadyHas) {
             updatedMap[k][memberId] = dedupe([...futureList, updatedStream]);
           }
@@ -681,26 +832,14 @@ export function saveIncomeStreamToStorage(
       }
     });
   } else {
-    // Helper to deduplicate stream list by ID
-    const dedupe = (list: IncomeStream[]) => {
-      const seen = new Set<string>();
-      return list.filter((item) => {
-        const key = item.id || `${item.name}-${item.dueDate}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    };
-
-    // Ensure baseline default for other unvisited months retains the original unedited streams
-    const baseRootList = incomesMap[memberId] && Array.isArray(incomesMap[memberId]) && incomesMap[memberId].length > 0
-      ? incomesMap[memberId]
-      : baseList;
+    // If NOT recurrent, we MUST ensure it's removed from the global template
+    const baseRootList = Array.isArray(incomesMap[memberId]) ? (incomesMap[memberId] as IncomeStream[]) : [];
+    const cleanBaseRootList = baseRootList.filter(s => s.id !== updatedStream.id);
 
     // Only update this specific month
     updatedMap = {
       ...incomesMap,
-      [memberId]: dedupe(baseRootList),
+      [memberId]: dedupe(cleanBaseRootList),
       [monthKey]: {
         ...monthData,
         [memberId]: dedupe(updatedList),
@@ -712,19 +851,21 @@ export function saveIncomeStreamToStorage(
     localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(updatedMap));
     localStorage.setItem('wepay_monthly_incomes', JSON.stringify(updatedMap));
     window.dispatchEvent(new Event('wepay_incomes_updated'));
-    syncIncomesMapToFirestore(groupId, updatedMap);
+    if (groupId) {
+      syncIncomesMapToFirestore(groupId, updatedMap, true);
+    }
   } catch (e) {
-    console.error('Error saving incomes map:', e);
+    console.error('Error saving updated incomes map:', e);
   }
 
-  return updatedStream;
+  return { stream: updatedStream, updatedMap };
 }
 
 export function deleteIncomeStreamFromStorage(
   memberId: string,
   streamId: string,
   monthKey: string = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
-  applyToAllMonths: boolean = false,
+  deleteMode: 'thisMonth' | 'future' | 'all' = 'thisMonth',
   groupId?: string
 ): void {
   let incomesMap: Record<string, any> = {};
@@ -737,56 +878,16 @@ export function deleteIncomeStreamFromStorage(
     console.error('Error reading incomes for deletion:', e);
   }
 
-  const monthData = incomesMap[monthKey] || {};
-  let currentStreams: IncomeStream[] = [];
-  if (monthData[memberId] && Array.isArray(monthData[memberId])) {
-    currentStreams = monthData[memberId];
-  } else if (incomesMap[memberId] && Array.isArray(incomesMap[memberId])) {
-    currentStreams = incomesMap[memberId];
-  }
-
-  const updatedList = currentStreams.filter((s) => s.id !== streamId);
-  let updatedMap: Record<string, any> = {};
-
-  if (applyToAllMonths) {
-    const baseList = (incomesMap[memberId] && Array.isArray(incomesMap[memberId])) ? incomesMap[memberId] : currentStreams;
-    const cleanBaseList = baseList.filter((s: IncomeStream) => s.id !== streamId);
-
-    updatedMap = {
-      ...incomesMap,
-      [memberId]: cleanBaseList,
-      [monthKey]: {
-        ...monthData,
-        [memberId]: updatedList,
-      },
-    };
-
-    // Also remove from any future month keys
-    Object.keys(updatedMap).forEach((k) => {
-      if (k.match(/^\d{4}-\d{2}$/) && k > monthKey && updatedMap[k]?.[memberId] && Array.isArray(updatedMap[k][memberId])) {
-        updatedMap[k][memberId] = updatedMap[k][memberId].filter((s: IncomeStream) => s.id !== streamId);
-      }
-    });
-  } else {
-    const baseRootList = incomesMap[memberId] && Array.isArray(incomesMap[memberId])
-      ? incomesMap[memberId]
-      : currentStreams;
-
-    updatedMap = {
-      ...incomesMap,
-      [memberId]: baseRootList,
-      [monthKey]: {
-        ...monthData,
-        [memberId]: updatedList,
-      },
-    };
-  }
+  incomesMap = cleanGhostIncomeStreams(incomesMap);
+  const updatedMap = getUpdatedIncomeMapAfterDeletion(incomesMap, memberId, streamId, monthKey, deleteMode);
 
   try {
     localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(updatedMap));
     localStorage.setItem('wepay_monthly_incomes', JSON.stringify(updatedMap));
     window.dispatchEvent(new Event('wepay_incomes_updated'));
-    syncIncomesMapToFirestore(groupId, updatedMap);
+    if (groupId) {
+      syncIncomesMapToFirestore(groupId, updatedMap, true);
+    }
   } catch (e) {
     console.error('Error saving incomes map after deletion:', e);
   }
@@ -795,7 +896,7 @@ export function deleteIncomeStreamFromStorage(
 export function getMonthlyIncomeData(
   monthKey: string,
   members: FamilyMember[],
-  transactions?: Transaction[]
+  _transactions?: Transaction[]
 ): MonthlyIncomeResult {
   let incomesMap: any = {};
   let monthlyIncomesMap: any = {};
@@ -810,39 +911,33 @@ export function getMonthlyIncomeData(
     console.error('Error reading incomes from localStorage:', e);
   }
 
-  // If transactions exist or are stored, auto-merge any income transactions into the map
-  const activeTxs = transactions || (() => {
-    try {
-      const savedTxs = localStorage.getItem('wepay_transactions');
-      if (savedTxs) return JSON.parse(savedTxs);
-    } catch (e) {}
-    return [];
-  })();
-
-  if (Array.isArray(activeTxs) && activeTxs.length > 0) {
-    incomesMap = recoverIncomesFromTransactions(incomesMap, activeTxs, members);
-  }
+  incomesMap = cleanGhostIncomeStreams(incomesMap);
+  monthlyIncomesMap = cleanGhostIncomeStreams(monthlyIncomesMap);
 
   const monthData = incomesMap[monthKey] || monthlyIncomesMap[monthKey] || {};
 
   let totalFixedIncome = 0;
   let totalValesIncome = 0;
   let totalExtraIncome = 0;
-  const memberTotals: Record<string, { fixed: number; vales: number; extra: number; total: number }> = {};
+  let totalReceivedIncome = 0;
+  const memberTotals: Record<string, { fixed: number; vales: number; extra: number; total: number; received: number }> = {};
 
   members.forEach((member, idx) => {
     let streams: IncomeStream[] | undefined = undefined;
 
-    if (monthData[member.id] && Array.isArray(monthData[member.id]) && monthData[member.id].length > 0) {
-      streams = monthData[member.id];
-    } else if (incomesMap[member.id] && Array.isArray(incomesMap[member.id]) && incomesMap[member.id].length > 0) {
-      streams = incomesMap[member.id];
-    } else if (monthlyIncomesMap[member.id] && Array.isArray(monthlyIncomesMap[member.id]) && monthlyIncomesMap[member.id].length > 0) {
-      streams = monthlyIncomesMap[member.id];
+    // 1. Explicit month-level data has highest priority (even if empty)
+    if (monthData && Array.isArray(monthData[member.id])) {
+      streams = (monthData[member.id] as IncomeStream[]).filter(s => isStreamValidForMonth(s, monthKey));
+    } else if (incomesMap && Array.isArray(incomesMap[member.id])) {
+      // If using template, ONLY include recurrent incomes and respect dates
+      streams = (incomesMap[member.id] as IncomeStream[])
+        .filter(s => isStreamValidForMonth(s, monthKey));
+    } else if (monthlyIncomesMap && Array.isArray(monthlyIncomesMap[member.id])) {
+      streams = (monthlyIncomesMap[member.id] as IncomeStream[])
+        .filter(s => isStreamValidForMonth(s, monthKey));
     }
 
-    if (!streams || streams.length === 0) {
-      // Flexible search in monthData and incomesMap by candidate keys
+    if (!streams) {
       const candidateKeys = Array.from(
         new Set([...Object.keys(monthData || {}), ...Object.keys(incomesMap || {}), ...Object.keys(monthlyIncomesMap || {})])
       ).filter((k) => !k.match(/^\d{4}-\d{2}$/));
@@ -851,24 +946,19 @@ export function getMonthlyIncomeData(
       for (const k of candidateKeys) {
         const kLow = k.toLowerCase().trim();
         if (
-          (memName && kLow.includes(memName)) ||
-          (memName.includes('josy') && kLow.includes('josy')) ||
-          (memName.includes('josefa') && (kLow.includes('josefa') || kLow.includes('josy'))) ||
-          (memName.includes('thiago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
-          (memName.includes('thyago') && (kLow.includes('thiago') || kLow.includes('thyago'))) ||
-          (idx === 1 && (kLow.includes('m2') || kLow.includes('mariana') || kLow.includes('mulher') || kLow.includes('josy'))) ||
-          (idx === 0 && (kLow.includes('m1') || kLow.includes('thiago') || kLow.includes('homem')))
+          kLow === member.id.toLowerCase() ||
+          (memName && kLow.includes(memName))
         ) {
           const found = monthData[k] || incomesMap[k] || monthlyIncomesMap[k];
-          if (Array.isArray(found) && found.length > 0) {
-            streams = found;
-            break;
+          if (Array.isArray(found)) {
+            streams = (found as IncomeStream[]).filter(s => isStreamValidForMonth(s, monthKey));
+            if (streams.length > 0) break;
           }
         }
       }
     }
 
-    if (streams === undefined || streams.length === 0) {
+    if (streams === undefined) {
       const isDemo = typeof window !== 'undefined' && localStorage.getItem('wepay_is_demo') === 'true';
       if (member.income && member.income > 0) {
         streams = [
@@ -895,10 +985,10 @@ export function getMonthlyIncomeData(
       }
     }
 
-    // Deduplicate streams
+    // Deduplicate streams strictly by ID
     const seen = new Set<string>();
     streams = (streams || []).filter((s) => {
-      const key = s.id || `${s.name}-${s.dueDate}`;
+      const key = s.id;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -918,25 +1008,45 @@ export function getMonthlyIncomeData(
 
     const memberTotal = fixed + vales + extra;
 
+    // Calculate real received in cash
+    const receivedFixed = streams
+      .filter((s) => (s.nature === 'fixed' || (s.nature as string) === 'variable') && s.received)
+      .reduce((acc, s) => acc + (s.amount || 0), 0);
+
+    const receivedVales = streams
+      .filter((s) => s.nature === 'vales' && s.received)
+      .reduce((acc, s) => acc + getStreamAmount(s, monthKey), 0);
+
+    const receivedExtra = streams
+      .filter((s) => s.nature === 'extra')
+      .reduce((acc, s) => acc + (s.amount || 0), 0); // actual extra received
+
+    const memberReceived = receivedFixed + receivedVales + receivedExtra;
+
     memberTotals[member.id] = {
       fixed,
       vales,
       extra,
       total: memberTotal,
+      received: memberReceived,
     };
 
     totalFixedIncome += fixed;
     totalValesIncome += vales;
     totalExtraIncome += extra;
+    totalReceivedIncome += memberReceived;
   });
 
   const totalFamilyIncome = totalFixedIncome + totalValesIncome + totalExtraIncome;
+  const totalPendingIncome = Math.max(0, totalFamilyIncome - totalReceivedIncome);
 
   return {
     totalFixedIncome,
     totalValesIncome,
     totalExtraIncome,
     totalFamilyIncome,
+    totalReceivedIncome,
+    totalPendingIncome,
     memberTotals,
   };
 }
@@ -944,7 +1054,7 @@ export function getMonthlyIncomeData(
 export function getMemberIncomeOptions(
   whoOption: 'casal' | 'homem' | 'mulher',
   members: FamilyMember[],
-  monthKey: string = '2026-08'
+  monthKey: string = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
 ): { id: string; name: string; icon: string; nature?: string }[] {
   let incomesMap: Record<string, any> = {};
   let monthlyIncomesMap: Record<string, any> = {};
@@ -967,10 +1077,10 @@ export function getMemberIncomeOptions(
 
     let streams: IncomeStream[] = [];
 
-    if (incomesMap[member.id] && Array.isArray(incomesMap[member.id])) {
-      streams = incomesMap[member.id];
-    } else if (monthlyIncomesMap[monthKey] && monthlyIncomesMap[monthKey][member.id] && Array.isArray(monthlyIncomesMap[monthKey][member.id])) {
-      streams = monthlyIncomesMap[monthKey][member.id];
+    if (monthlyIncomesMap[monthKey] && monthlyIncomesMap[monthKey][member.id] && Array.isArray(monthlyIncomesMap[monthKey][member.id])) {
+      streams = (monthlyIncomesMap[monthKey][member.id] as IncomeStream[]).filter(s => isStreamValidForMonth(s, monthKey));
+    } else if (incomesMap[member.id] && Array.isArray(incomesMap[member.id])) {
+      streams = (incomesMap[member.id] as IncomeStream[]).filter(s => s.isRecurrent !== false && isStreamValidForMonth(s, monthKey));
     }
 
     if (streams && streams.length > 0) {
@@ -1052,9 +1162,9 @@ export function getFullMemberIncomeStreams(
 
   let streams: IncomeStream[] = [];
   if (monthlyIncomesMap[monthKey] && monthlyIncomesMap[monthKey][memberId] && Array.isArray(monthlyIncomesMap[monthKey][memberId])) {
-    streams = monthlyIncomesMap[monthKey][memberId];
+    streams = (monthlyIncomesMap[monthKey][memberId] as IncomeStream[]).filter(s => isStreamValidForMonth(s, monthKey));
   } else if (incomesMap[memberId] && Array.isArray(incomesMap[memberId])) {
-    streams = incomesMap[memberId];
+    streams = (incomesMap[memberId] as IncomeStream[]).filter(s => s.isRecurrent !== false && isStreamValidForMonth(s, monthKey));
   }
 
   return (streams || []).filter(

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FamilyMember, IncomeStream, IncomeNature } from '../types';
-import { getMemberIncomeOptions, saveIncomeStreamToStorage, formatMemberName } from '../utils/incomeUtils';
+import { getMemberIncomeOptions, saveIncomeStreamToStorage, deleteIncomeStreamFromStorage, formatMemberName } from '../utils/incomeUtils';
+import { parseCurrencyBR } from '../utils/currencyUtils';
 import { 
   X, Plus, Trash2, Edit3, Check, AlertTriangle, Sparkles, 
   Wallet, User, DollarSign, Calendar, CheckCircle2, ChevronRight,
@@ -14,6 +15,8 @@ interface IncomeCategoriesManagerModalProps {
   selectedMemberId?: string;
   onSelectCategory?: (categoryName: string, stream?: IncomeStream) => void;
   onIncomesChanged?: () => void;
+  monthKey?: string;
+  groupId?: string;
 }
 
 const INCOME_EMOJIS = [
@@ -29,6 +32,8 @@ export const IncomeCategoriesManagerModal: React.FC<IncomeCategoriesManagerModal
   selectedMemberId,
   onSelectCategory,
   onIncomesChanged,
+  monthKey,
+  groupId,
 }) => {
   const maleMember = members[0] || { id: 'm1', name: 'Membro 1', color: '#3b82f6' };
   const femaleMember = members[1] || members[0] || { id: 'm2', name: 'Membro 2', color: '#ec4899' };
@@ -50,6 +55,7 @@ export const IncomeCategoriesManagerModal: React.FC<IncomeCategoriesManagerModal
   const [formNature, setFormNature] = useState<IncomeNature>('extra');
   const [formAmount, setFormAmount] = useState('');
   const [formDueDate, setFormDueDate] = useState('Dia 05');
+  const [formIsRecurrent, setFormIsRecurrent] = useState(true);
   const [formError, setFormError] = useState('');
 
   // Internal trigger to force re-render when storage updates
@@ -93,6 +99,7 @@ export const IncomeCategoriesManagerModal: React.FC<IncomeCategoriesManagerModal
     setFormNature('extra');
     setFormAmount('');
     setFormDueDate('Dia 05');
+    setFormIsRecurrent(true);
     setFormError('');
     setShowFormModal(true);
   };
@@ -107,6 +114,7 @@ export const IncomeCategoriesManagerModal: React.FC<IncomeCategoriesManagerModal
       stream.amount ? String(stream.amount) : stream.targetGoal ? String(stream.targetGoal) : ''
     );
     setFormDueDate(stream.dueDate || 'Dia 05');
+    setFormIsRecurrent(stream.isRecurrent ?? true);
     setFormError('');
     setShowFormModal(true);
   };
@@ -119,44 +127,29 @@ export const IncomeCategoriesManagerModal: React.FC<IncomeCategoriesManagerModal
     }
 
     try {
-      const savedV3 = localStorage.getItem('wepay_couple_incomes_v3');
-      const parsed: Record<string, IncomeStream[]> = savedV3 ? JSON.parse(savedV3) : {};
-      const list = parsed[activeMemberId] ? [...parsed[activeMemberId]] : [];
+      const numericAmount = parseCurrencyBR(formAmount);
+      const targetMonthKey = monthKey || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
 
-      const numericAmount = parseFloat(formAmount.replace(',', '.')) || 0;
-
-      if (editingStreamId) {
-        // Edit existing
-        const index = list.findIndex((s) => s.id === editingStreamId);
-        if (index >= 0) {
-          list[index] = {
-            ...list[index],
-            name: formName.trim(),
-            icon: formIcon,
-            nature: formNature,
-            amount: formNature === 'extra' ? list[index].amount || 0 : numericAmount,
-            targetGoal: formNature === 'extra' ? numericAmount : undefined,
-            dueDate: formDueDate,
-          };
-        }
-      } else {
-        // Create new
-        const newStream: IncomeStream = {
-          id: `income-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      saveIncomeStreamToStorage(
+        activeMemberId,
+        {
+          id: editingStreamId || undefined,
           name: formName.trim(),
           icon: formIcon,
           nature: formNature,
           amount: formNature === 'extra' ? 0 : numericAmount,
           targetGoal: formNature === 'extra' ? numericAmount : undefined,
           dueDate: formDueDate,
+          isRecurrent: formIsRecurrent,
           isMain: false,
-        };
-        list.push(newStream);
-      }
+          startDate: targetMonthKey,
+          endDate: formIsRecurrent ? undefined : targetMonthKey,
+        },
+        targetMonthKey,
+        groupId,
+        formIsRecurrent // Apply to all months only if recurrent
+      );
 
-      parsed[activeMemberId] = list;
-      localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(parsed));
-      window.dispatchEvent(new Event('wepay_incomes_updated'));
       setUpdateCount((c) => c + 1);
       setShowFormModal(false);
       if (onIncomesChanged) onIncomesChanged();
@@ -167,17 +160,16 @@ export const IncomeCategoriesManagerModal: React.FC<IncomeCategoriesManagerModal
 
   const handleDeleteStream = (stream: IncomeStream) => {
     try {
-      const savedV3 = localStorage.getItem('wepay_couple_incomes_v3');
-      if (savedV3) {
-        const parsed: Record<string, IncomeStream[]> = JSON.parse(savedV3);
-        if (parsed[activeMemberId]) {
-          parsed[activeMemberId] = parsed[activeMemberId].filter((s) => s.id !== stream.id);
-          localStorage.setItem('wepay_couple_incomes_v3', JSON.stringify(parsed));
-          window.dispatchEvent(new Event('wepay_incomes_updated'));
-          setUpdateCount((c) => c + 1);
-          if (onIncomesChanged) onIncomesChanged();
-        }
-      }
+      const targetMonthKey = monthKey || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+      deleteIncomeStreamFromStorage(
+        activeMemberId,
+        stream.id,
+        targetMonthKey,
+        'all', // Categorias manager usually deletes from all
+        groupId
+      );
+      setUpdateCount((c) => c + 1);
+      if (onIncomesChanged) onIncomesChanged();
     } catch (e) {
       console.error('Error deleting income stream:', e);
     }
@@ -544,6 +536,43 @@ export const IncomeCategoriesManagerModal: React.FC<IncomeCategoriesManagerModal
                       {emoji}
                     </button>
                   ))}
+                </div>
+              </div>
+
+              {/* Recorrente Toggle */}
+              <div className="bg-slate-950 border border-slate-800/80 p-2.5 rounded-xl flex items-center justify-between gap-2">
+                <div className="flex-1 min-w-0">
+                  <label className="text-[11px] font-bold text-slate-200 block leading-tight">
+                    Recorrente?
+                  </label>
+                  <span className="text-[9.5px] text-slate-400 block leading-tight mt-0.5">
+                    Essa renda se repete todos os meses?
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 p-0.5 rounded-lg shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setFormIsRecurrent(true)}
+                    className={`px-3 py-1 rounded-lg text-[10.5px] font-bold transition-all cursor-pointer ${
+                      formIsRecurrent
+                        ? 'bg-emerald-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Sim
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormIsRecurrent(false)}
+                    className={`px-3 py-1 rounded-lg text-[10.5px] font-bold transition-all cursor-pointer ${
+                      !formIsRecurrent
+                        ? 'bg-slate-800 text-white shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Não
+                  </button>
                 </div>
               </div>
 

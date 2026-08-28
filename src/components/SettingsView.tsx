@@ -1,3 +1,4 @@
+import { useAppStore } from "../store/useAppStore";
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FamilyGroup, FamilyMember } from '../types';
@@ -32,8 +33,6 @@ import {
 import { getGeminiApiKey, setGeminiApiKey } from '../utils/geminiClient';
 
 interface SettingsViewProps {
-  group: FamilyGroup;
-  members: FamilyMember[];
   onBack: () => void;
   onUpdateGroup: (updatedGroup: FamilyGroup) => void;
   onLogout: () => void;
@@ -58,18 +57,18 @@ const PRESET_AVATARS = [
 ];
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
-  group,
-  members,
   onBack,
   onUpdateGroup,
   onLogout,
 }) => {
+  const { group } = useAppStore();
+  const members = group?.members || [];
   const initialMembersList =
     members.length > 0
       ? members.map((m) => ({ ...m }))
       : [
-          { id: 'm1', name: 'Membro 1', avatar: '', color: '#3b82f6', role: 'admin', income: 3000 },
-          { id: 'm2', name: 'Membro 2', avatar: '', color: '#ec4899', role: 'member', income: 3000 },
+          { id: 'm1', name: 'Membro 1', avatar: '', color: '#3b82f6', role: 'admin' as const, income: 3000 },
+          { id: 'm2', name: 'Membro 2', avatar: '', color: '#ec4899', role: 'member' as const, income: 3000 },
         ];
 
   const computeGroupName = (mList: FamilyMember[]) => {

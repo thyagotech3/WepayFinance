@@ -235,7 +235,10 @@ export const FixedExpenseModal: React.FC<FixedExpenseModalProps> = ({
     expense?.paidByMemberId || currentMember.id
   );
   const [dueDate, setDueDate] = useState<string>(expense?.dueDate || '10');
-  const [isPaid, setIsPaid] = useState<boolean>(expense?.isPaid ?? false);
+  const [isPaid, setIsPaid] = useState<boolean>(() => {
+    if (!expense) return false;
+    return expense.paidMonths?.includes(monthKey) || false;
+  });
   const [recurrenceType, setRecurrenceType] = useState<RecurrenceType>(
     expense?.recurrenceType || 'fixed_amount'
   );
@@ -308,6 +311,15 @@ export const FixedExpenseModal: React.FC<FixedExpenseModalProps> = ({
     e.preventDefault();
     if (!title.trim() || !amount) return;
 
+    const currentPaidMonths = expense?.paidMonths || [];
+    let updatedPaidMonths = [...currentPaidMonths];
+    
+    if (isPaid && !updatedPaidMonths.includes(monthKey)) {
+      updatedPaidMonths.push(monthKey);
+    } else if (!isPaid && updatedPaidMonths.includes(monthKey)) {
+      updatedPaidMonths = updatedPaidMonths.filter(m => m !== monthKey);
+    }
+
     onSave({
       id: expense?.id,
       title: title.trim(),
@@ -315,11 +327,11 @@ export const FixedExpenseModal: React.FC<FixedExpenseModalProps> = ({
       category,
       paidByMemberId,
       dueDate: dueDate.trim() || '10',
-      isPaid,
+      paidMonths: updatedPaidMonths,
       recurrenceType,
       monthKey: expense?.monthKey || monthKey,
       notes: notes.trim() || undefined,
-      startMonthKey: recurrenceType === 'installment' ? startMonthKey : undefined,
+      startMonthKey: expense?.startMonthKey || (recurrenceType === 'installment' ? startMonthKey : monthKey),
       endMonthKey: recurrenceType === 'installment' ? endMonthKey : undefined,
       totalInstallments: recurrenceType === 'installment' ? totalInstallments : undefined,
     });
@@ -335,20 +347,12 @@ export const FixedExpenseModal: React.FC<FixedExpenseModalProps> = ({
       setIsPaid(false);
       // If expense exists, auto save status update
       if (expense) {
+        const currentPaidMonths = expense.paidMonths || [];
+        const updatedPaidMonths = currentPaidMonths.filter(m => m !== monthKey);
+        
         onSave({
-          id: expense.id,
-          title: title.trim(),
-          amount: parseFloat(amount) || 0,
-          category,
-          paidByMemberId,
-          dueDate,
-          isPaid: false,
-          recurrenceType,
-          monthKey: expense.monthKey || monthKey,
-          notes: notes.trim() || undefined,
-          startMonthKey: expense.startMonthKey,
-          endMonthKey: expense.endMonthKey,
-          totalInstallments: expense.totalInstallments,
+          ...expense,
+          paidMonths: updatedPaidMonths,
         });
       }
     }
@@ -358,20 +362,16 @@ export const FixedExpenseModal: React.FC<FixedExpenseModalProps> = ({
     setIsPaid(true);
     setPaidByMemberId(selectedPayer);
     if (expense) {
+      const currentPaidMonths = expense.paidMonths || [];
+      const updatedPaidMonths = [...currentPaidMonths];
+      if (!updatedPaidMonths.includes(monthKey)) {
+        updatedPaidMonths.push(monthKey);
+      }
+
       onSave({
-        id: expense.id,
-        title: title.trim(),
-        amount: parseFloat(amount) || 0,
-        category,
+        ...expense,
         paidByMemberId: selectedPayer,
-        dueDate,
-        isPaid: true,
-        recurrenceType,
-        monthKey: expense.monthKey || monthKey,
-        notes: notes.trim() || undefined,
-        startMonthKey: expense.startMonthKey,
-        endMonthKey: expense.endMonthKey,
-        totalInstallments: expense.totalInstallments,
+        paidMonths: updatedPaidMonths,
       });
     }
     setShowPayerPrompt(false);
@@ -948,18 +948,52 @@ export const FixedExpenseModal: React.FC<FixedExpenseModalProps> = ({
               <div className="space-y-1">
                 <h4 className="text-base font-extrabold text-white">Excluir Gasto Fixo?</h4>
                 <p className="text-xs text-slate-300">
-                  Tem certeza que deseja excluir <strong>"{title}"</strong>? Esta ação removerá a conta do seu controle mensal.
+                  Como deseja excluir <strong>"{title}"</strong>?
                 </p>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 pt-2">
+              <div className="flex flex-col gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowConfirmDelete(false)}
-                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl cursor-pointer"
+                  onClick={() => {
+                    if (expense) {
+                      const currentExcluded = expense.excludedMonths || [];
+                      onSave({
+                        ...expense,
+                        excludedMonths: [...currentExcluded, monthKey]
+                      });
+                      onClose();
+                    }
+                  }}
+                  className="w-full px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl border border-slate-800 cursor-pointer"
                 >
-                  Cancelar
+                  Excluir apenas este mês ({formatMonthLabel(monthKey)})
                 </button>
+                
+                {(recurrenceType === 'fixed_amount' || recurrenceType === 'variable_amount') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (expense) {
+                        // Calculate previous month for endMonthKey
+                        const [y, m] = monthKey.split('-').map(Number);
+                        const prevDate = new Date(y, m - 2, 1);
+                        const prevMonthKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+                        
+                        onSave({
+                          ...expense,
+                          endMonthKey: prevMonthKey,
+                          totalInstallments: undefined
+                        });
+                        onClose();
+                      }
+                    }}
+                    className="w-full px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl border border-slate-800 cursor-pointer"
+                  >
+                    Excluir deste mês em diante (Incluindo este)
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => {
@@ -968,9 +1002,17 @@ export const FixedExpenseModal: React.FC<FixedExpenseModalProps> = ({
                       onClose();
                     }
                   }}
-                  className="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl shadow-lg cursor-pointer"
+                  className="w-full px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl shadow-lg cursor-pointer"
                 >
-                  Excluir
+                  Excluir TUDO (Remover permanentemente)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmDelete(false)}
+                  className="w-full px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl cursor-pointer mt-2"
+                >
+                  Cancelar
                 </button>
               </div>
             </div>

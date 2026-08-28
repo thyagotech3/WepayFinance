@@ -2,18 +2,13 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { FamilyGroup, FamilyMember, Transaction, FixedExpenseItem, PiggyBankItem } from '../types';
 import { INITIAL_FIXED_EXPENSES } from '../data/mockInitialData';
 import { getMonthlyIncomeData } from '../utils/incomeUtils';
+import { useAppStore } from '../store/useAppStore';
 import { 
   ChevronLeft, ChevronRight, Calendar, ShoppingCart, TrendingUp,
   CheckCircle2, Clock, HelpCircle, X
 } from 'lucide-react';
 
 interface FullBalanceViewProps {
-  group: FamilyGroup;
-  currentMember?: FamilyMember;
-  members: FamilyMember[];
-  transactions: Transaction[];
-  fixedExpenses?: FixedExpenseItem[];
-  cofrinhos?: PiggyBankItem[];
   onBack?: () => void;
   onOpenExpenseModal?: () => void;
   onOpenIncomeModal?: () => void;
@@ -22,10 +17,14 @@ interface FullBalanceViewProps {
 }
 
 export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
-  members,
-  transactions,
-  fixedExpenses: propFixedExpenses,
+  onBack,
+  onOpenExpenseModal,
+  onOpenIncomeModal,
+  onOpenFixedExpenses,
+  onOpenCofrinhos,
 }) => {
+  const { group, transactions, fixedExpenses: propFixedExpenses } = useAppStore();
+  const members = group?.members || [];
   // Current selected date for month navigation
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
   const [incomesVersion, setIncomesVersion] = useState<number>(0);
@@ -66,14 +65,13 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
     return selectedDate.getFullYear() === now.getFullYear() && selectedDate.getMonth() === now.getMonth();
   }, [selectedDate]);
 
-  // Active valid transactions filtered for the selected month
+  // Active valid transactions filtered strictly for the selected month
   const activeTransactions = useMemo(() => {
     const valid = transactions.filter((t) => t.status !== 'reverted' && t.status !== 'deleted');
-    const filtered = valid.filter((t) => {
-      if (!t.date) return true;
+    return valid.filter((t) => {
+      if (!t.date) return false;
       return t.date.startsWith(selectedMonthKey);
     });
-    return filtered.length > 0 ? filtered : valid;
   }, [transactions, selectedMonthKey]);
 
   // Incomes for the selected month
@@ -83,6 +81,7 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
   );
 
   const totalFamilyIncome = incomeData.totalFamilyIncome;
+  const totalReceivedIncome = incomeData.totalReceivedIncome;
 
   // Fixed expenses
   const fixedExpensesList: FixedExpenseItem[] = useMemo(() => {
@@ -115,8 +114,22 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
     .filter((t) => t.type === 'expense')
     .reduce((acc, t) => acc + t.amount, 0);
 
-  // Saldo Atual = Renda total - Gastos
-  const currentBalance = totalFamilyIncome - totalExpenses;
+  const totalFixedProgrammed = totalFixedPaid + totalFixedPending;
+
+  // For future months, expenses card shows predicted fixed expenses sum
+  const displayExpenses = isCurrentRealMonth ? totalExpenses : totalFixedProgrammed;
+  const displayExpensesTitle = isCurrentRealMonth ? 'Gastos do Mês' : 'Gastos Previstos';
+
+  const currentMonthPT = useMemo(() => {
+    return selectedDate.toLocaleDateString('pt-BR', { month: 'long' }).replace(/^\w/, (c) => c.toUpperCase());
+  }, [selectedDate]);
+
+  // Saldo Atual (Mês atual) vs Projeção do Mês (Meses futuros)
+  const currentBalance = isCurrentRealMonth
+    ? (totalReceivedIncome > 0 ? totalReceivedIncome - totalExpenses : totalFamilyIncome - totalExpenses)
+    : (totalFamilyIncome - totalFixedProgrammed - totalExpenses);
+
+  const primaryBalanceTitle = isCurrentRealMonth ? 'Saldo Atual' : `Projeção de ${currentMonthPT}`;
 
   // Saldo Após quitação das dívidas = Renda total - Gastos - Contas pendentes
   const balanceAfterBills = totalFamilyIncome - totalExpenses - totalFixedPending;
@@ -244,10 +257,10 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
 
         <div className="relative z-10 grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
           
-          {/* 1. TOPO: SALDO ATUAL (LINHA INTEIRA) */}
+          {/* 1. TOPO: SALDO ATUAL / PROJEÇÃO DO MÊS (LINHA INTEIRA) */}
           <div className="col-span-2 lg:col-span-4">
             {renderCard({
-              title: 'Saldo Atual',
+              title: primaryBalanceTitle,
               value: currentBalance,
               icon: (
                 <button
@@ -257,8 +270,8 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
                     setActiveExplanation((prev) => (prev === 'saldo_atual' ? null : 'saldo_atual'));
                   }}
                   className="p-1 -mr-1 -my-1 rounded-full text-purple-400 hover:text-purple-300 hover:bg-purple-500/15 active:scale-90 transition-all cursor-pointer"
-                  title="Ver explicação sobre o Saldo Atual"
-                  aria-label="Explicação Saldo Atual"
+                  title="Ver explicação sobre o saldo"
+                  aria-label="Explicação Saldo"
                 >
                   <HelpCircle className="w-4 h-4" />
                 </button>
@@ -270,7 +283,7 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
             })}
           </div>
 
-          {/* CARD DE EXPLICAÇÃO DO SALDO ATUAL (ABERTO AO CLICAR NO ?) */}
+          {/* CARD DE EXPLICAÇÃO DO SALDO ATUAL / PROJEÇÃO (ABERTO AO CLICAR NO ?) */}
           {activeExplanation === 'saldo_atual' && (
             <div className="col-span-2 lg:col-span-4 bg-[#171536]/95 border border-purple-500/50 rounded-2xl p-3 sm:p-4 text-xs text-purple-100 flex items-start justify-between gap-3 shadow-xl transition-all">
               <div className="flex items-start gap-2.5">
@@ -279,10 +292,12 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
                 </div>
                 <div className="space-y-0.5 text-left">
                   <span className="text-xs font-bold text-purple-300 block uppercase tracking-wider">
-                    O que é o Saldo Atual?
+                    O que é este valor?
                   </span>
                   <p className="text-xs sm:text-sm text-slate-200 leading-relaxed font-medium">
-                    O saldo atual é o que você recebeu, menos o que você gastou e pagou até o momento no mês selecionado.
+                    {isCurrentRealMonth
+                      ? 'O saldo atual é o que você recebeu, menos o que você gastou e pagou até o momento no mês selecionado.'
+                      : 'A projeção do mês calcula a renda prevista menos os gastos e despesas fixas previstos para o período.'}
                   </p>
                 </div>
               </div>
@@ -309,11 +324,11 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
             })}
           </div>
 
-          {/* Gastos do Mês */}
+          {/* Gastos do Mês / Gastos Previstos */}
           <div className="col-span-1">
             {renderCard({
-              title: 'Gastos do Mês',
-              value: totalExpenses,
+              title: displayExpensesTitle,
+              value: displayExpenses,
               icon: <ShoppingCart className="w-3.5 h-3.5 text-rose-400 shrink-0" />,
               colorClass: 'text-rose-400',
               borderAccent: 'border-slate-800',

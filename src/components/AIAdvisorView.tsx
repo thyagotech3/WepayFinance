@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { FamilyGroup, FamilyMember, Transaction, AIAdviceResult, IncomeStream, FixedExpenseItem } from '../types';
 import { getMonthlyIncomeData } from '../utils/incomeUtils';
+import { parseCurrencyBR } from '../utils/currencyUtils';
+import { useAppStore } from '../store/useAppStore';
 import { BalanceAIInsightCard } from './BalanceAIInsightCard';
 import {
   parseExpenseWithGemini,
@@ -89,11 +91,6 @@ interface ParsedLaunchData {
 }
 
 interface AIAdvisorViewProps {
-  group: FamilyGroup;
-  members: FamilyMember[];
-  currentMember?: FamilyMember;
-  transactions: Transaction[];
-  fixedExpenses?: FixedExpenseItem[];
   onDeleteTransaction?: (id: string) => void;
   onAddTransaction?: (tx: Omit<Transaction, 'id' | 'date'>) => void;
   onAddIncomeStream?: (memberId: string, streamData: Omit<IncomeStream, 'id'>, monthKey: string) => void;
@@ -101,16 +98,14 @@ interface AIAdvisorViewProps {
 }
 
 export const AIAdvisorView: React.FC<AIAdvisorViewProps> = ({
-  group,
-  members,
-  currentMember,
-  transactions,
-  fixedExpenses: propFixedExpenses,
   onDeleteTransaction,
   onAddTransaction,
   onAddIncomeStream,
   onOpenFullBalance,
 }) => {
+  const { group, currentMemberId, transactions, fixedExpenses: propFixedExpenses } = useAppStore();
+  const members = group?.members || [];
+  const currentMember = members.find((m) => m.id === currentMemberId) || members[0];
   // AI Launching State
   const [launchPrompt, setLaunchPrompt] = useState<string>('');
   const [isParsingLaunch, setIsParsingLaunch] = useState<boolean>(false);
@@ -277,9 +272,16 @@ export const AIAdvisorView: React.FC<AIAdvisorViewProps> = ({
 
       mediaRecorder.start();
       setIsRecordingVoice(true);
-    } catch (err) {
-      console.error('Erro ao acessar microfone:', err);
-      alert('Não foi possível acessar o microfone. Verifique as permissões do seu navegador.');
+    } catch (err: any) {
+      setIsRecordingVoice(false);
+      const isDismissed =
+        err?.name === 'NotAllowedError' ||
+        err?.name === 'PermissionDismissedError' ||
+        err?.message?.toLowerCase().includes('dismissed') ||
+        err?.message?.toLowerCase().includes('permission');
+      if (!isDismissed) {
+        console.warn('Microfone não acessível:', err);
+      }
     }
   };
 
@@ -287,7 +289,7 @@ export const AIAdvisorView: React.FC<AIAdvisorViewProps> = ({
   const handleConfirmLaunch = () => {
     if (!parsedLaunch) return;
 
-    const numericAmount = parseFloat(editAmount.replace(',', '.')) || parsedLaunch.amount || 0;
+    const numericAmount = parseCurrencyBR(editAmount) || parsedLaunch.amount || 0;
     const finalDesc = editDesc.trim() || parsedLaunch.description || 'Lançamento IA';
     const finalMemberId = editMemberId || currentMember?.id || members[0]?.id;
     const finalSplit = editSplitType || 'equal';

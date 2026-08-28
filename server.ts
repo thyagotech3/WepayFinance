@@ -23,8 +23,8 @@ app.use((req, res, next) => {
 });
 
 // Initialize Gemini SDK with fast and reliable models
-const PRIMARY_MODEL = "gemini-2.5-flash";
-const FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.7-flash", "gemini-2.5-pro"];
+const PRIMARY_MODEL = "gemini-3.1-flash-lite";
+const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-3.7-flash", "gemini-2.5-pro"];
 
 const getAi = () => {
   const apiKey = process.env.GEMINI_API_KEY;
