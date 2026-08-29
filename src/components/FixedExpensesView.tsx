@@ -6,6 +6,7 @@ import {
   getDueDateStatus,
   getInstallmentInfo,
 } from './FixedExpenseModal';
+import { isFixedExpensePaidInMonth, isFixedExpenseActiveInMonth } from '../utils/incomeUtils';
 import { CATEGORIES_META } from '../data/suggestions';
 import {
   Calendar,
@@ -139,31 +140,12 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
 
   // Filter expenses by current month key (or fixed/variable/installment items)
   const currentMonthExpenses = useMemo(() => {
-    return expenses.filter((item) => {
-      // If month is excluded, hide it
-      if (item.excludedMonths?.includes(monthKey)) return false;
-
-      // Check start month for fixed/variable
-      if (item.recurrenceType === 'fixed_amount' || item.recurrenceType === 'variable_amount') {
-        if (item.startMonthKey && monthKey < item.startMonthKey) return false;
-        if (item.endMonthKey && monthKey > item.endMonthKey) return false;
-        return true;
-      }
-
-      if (item.recurrenceType === 'single_month') {
-        return item.monthKey === monthKey;
-      }
-      if (item.recurrenceType === 'installment') {
-        const info = getInstallmentInfo(item, monthKey);
-        return info ? info.isActiveInMonth : item.monthKey === monthKey;
-      }
-      return true;
-    });
+    return expenses.filter((item) => isFixedExpenseActiveInMonth(item, monthKey));
   }, [expenses, monthKey]);
 
   // Helper to check if item is paid in current month
   const isItemPaidInMonth = (item: FixedExpenseItem) => {
-    return item.paidMonths?.includes(monthKey) || false;
+    return isFixedExpensePaidInMonth(item, monthKey);
   };
 
   // Calculate totals
@@ -213,7 +195,7 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
 
   // Smart due date categorization for unpaid items
   const unpaidAnalysis = useMemo(() => {
-    const unpaid = currentMonthExpenses.filter((e) => !e.isPaid);
+    const unpaid = currentMonthExpenses.filter((e) => !isItemPaidInMonth(e));
     const overdueList: FixedExpenseItem[] = [];
     const dueTodayList: FixedExpenseItem[] = [];
     const dueWithin10DaysList: { item: FixedExpenseItem; diff: number }[] = [];
@@ -334,6 +316,8 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
     expenseData: Omit<FixedExpenseItem, 'id'> & { id?: string }
   ) => {
     let savedId = expenseData.id;
+    const isPaidInCurrentMonth = isFixedExpensePaidInMonth(expenseData as FixedExpenseItem, monthKey);
+
     if (expenseData.id) {
       setExpenses((prev) =>
         prev.map((e) =>
@@ -351,16 +335,13 @@ export const FixedExpensesView: React.FC<FixedExpensesViewProps> = ({
       setExpenses((prev) => [newExpense, ...prev]);
     }
 
-    if (expenseData.isPaid && savedId) {
+    if (isPaidInCurrentMonth && savedId) {
       const payerId = expenseData.paidByMemberId || currentMember.id || 'both';
       const meta = CATEGORIES_META[expenseData.category];
       const instInfo =
         expenseData.recurrenceType === 'installment'
           ? getInstallmentInfo(expenseData as FixedExpenseItem, monthKey)
           : null;
-      
-      // Since it was saved as paid in the modal, we ensure it's in paidMonths
-      // but onSave usually handles the item update.
 
       const recText =
         expenseData.recurrenceType === 'fixed_amount'

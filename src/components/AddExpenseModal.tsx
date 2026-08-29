@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { FamilyMember, CategoryType, SplitType, Transaction } from '../types';
+import { FamilyMember, CategoryType, SplitType, Transaction, FixedExpenseItem } from '../types';
 import { CATEGORIES_META } from '../data/suggestions';
 import { getMemberIncomeOptions, saveIncomeStreamToStorage, formatMemberName } from '../utils/incomeUtils';
 import { parseCurrencyBR } from '../utils/currencyUtils';
+import { useAppStore } from '../store/useAppStore';
 import { AddIncomeModal } from './AddIncomeModal';
 import { DatePickerModal } from './DatePickerModal';
 import { 
@@ -27,6 +28,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   onAddTransaction,
   onAddIncomeStream,
 }) => {
+  const { fixedExpenses, setFixedExpenses } = useAppStore();
   const [transactionType, setTransactionType] = useState<'expense' | 'income' | 'fixed'>('expense');
 
   // Form states
@@ -162,8 +164,33 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
       12, 0, 0
     ).toISOString();
 
+    const monthKey = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`;
+    const dayStr = String(selectedDate.getDate()).padStart(2, '0');
+    let fixedExpenseId: string | undefined = undefined;
+
+    if (transactionType === 'fixed') {
+      fixedExpenseId = `fe_${Date.now()}`;
+      const newFixedItem: FixedExpenseItem = {
+        id: fixedExpenseId,
+        title: finalDescription,
+        amount: numericAmount,
+        category: category as any,
+        paidByMemberId,
+        dueDate: dayStr,
+        isPaid: true,
+        paidMonths: [monthKey],
+        recurrenceType: 'fixed_amount',
+        monthKey,
+        notes: 'Lançado via Modal de Lançamento',
+      };
+      const updatedFixed = [newFixedItem, ...(fixedExpenses || [])];
+      setFixedExpenses(updatedFixed);
+      localStorage.setItem('wepay_fixed_expenses', JSON.stringify(updatedFixed));
+      window.dispatchEvent(new Event('wepay_fixed_expenses_updated'));
+    }
+
     onAddTransaction({
-      description: finalDescription,
+      description: transactionType === 'fixed' ? `[Gasto Fixo] ${finalDescription}` : finalDescription,
       amount: numericAmount,
       category: category,
       categoryIcon: CATEGORIES_META[category]?.icon || 'ShoppingCart',
@@ -171,6 +198,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
       paidByMemberId,
       splitType,
       isRecurrent: transactionType === 'fixed',
+      fixedExpenseId,
       aiCategorized: false,
       date: txDate,
     });

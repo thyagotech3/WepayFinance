@@ -197,15 +197,23 @@ export function App() {
         setFixedExpenses((prev: FixedExpenseItem[]) => {
           let mutated = false;
           const updated = prev.map((fe) => {
-            const hasActiveTx = remoteTxs.some(
-              (t) =>
-                t.status === 'active' &&
-                ((t.fixedExpenseId && t.fixedExpenseId === fe.id) ||
-                  (!t.fixedExpenseId && t.isRecurrent && t.description.toLowerCase().includes(fe.title.toLowerCase())))
-            );
-            if (hasActiveTx && !fe.isPaid) {
-              mutated = true;
-              return { ...fe, isPaid: true };
+            const txDates = remoteTxs
+              .filter(
+                (t) =>
+                  t.status === 'active' &&
+                  ((t.fixedExpenseId && t.fixedExpenseId === fe.id) ||
+                    (!t.fixedExpenseId && t.isRecurrent && t.description.toLowerCase().includes(fe.title.toLowerCase())))
+              )
+              .map((t) => (t.date ? t.date.substring(0, 7) : ''))
+              .filter(Boolean);
+
+            if (txDates.length > 0) {
+              const currentPaidMonths = fe.paidMonths || [];
+              const combinedMonths = Array.from(new Set([...currentPaidMonths, ...txDates]));
+              if (combinedMonths.length !== currentPaidMonths.length) {
+                mutated = true;
+                return { ...fe, paidMonths: combinedMonths };
+              }
             }
             return fe;
           });
@@ -293,6 +301,10 @@ export function App() {
       <Navbar
         group={group}
         currentMember={currentMember}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        subView={subView}
+        setSubView={setSubView}
         onSwitchMember={setCurrentMemberId}
         onLogout={handleLogout}
         onOpenSettings={() => setShowSettingsModal(true)}

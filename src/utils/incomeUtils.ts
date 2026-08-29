@@ -495,6 +495,95 @@ export function deepMergeFixedExpenses(
 }
 
 /**
+ * Checks if a fixed expense is marked as paid in a specific monthKey (e.g. "2026-08").
+ * Uses paidMonths array if present, otherwise falls back to isPaid.
+ */
+export function isFixedExpensePaidInMonth(
+  item?: FixedExpenseItem | null,
+  monthKey?: string
+): boolean {
+  if (!item) return false;
+  const validKey =
+    typeof monthKey === 'string' && monthKey.match(/^\d{4}-\d{2}$/)
+      ? monthKey
+      : `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+  if (Array.isArray(item.paidMonths)) {
+    return item.paidMonths.includes(validKey);
+  }
+
+  if (item.monthKey && item.monthKey === validKey && typeof item.isPaid === 'boolean') {
+    return item.isPaid;
+  }
+
+  if (typeof item.isPaid === 'boolean') {
+    return item.isPaid;
+  }
+
+  return false;
+}
+
+/**
+ * Checks if a fixed expense is active in a specific monthKey.
+ * Validates recurrenceType, installments range, single_month match, and excludedMonths.
+ */
+export function isFixedExpenseActiveInMonth(
+  item?: FixedExpenseItem | null,
+  monthKey?: string
+): boolean {
+  if (!item) return false;
+  const validKey =
+    typeof monthKey === 'string' && monthKey.match(/^\d{4}-\d{2}$/)
+      ? monthKey
+      : `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+  // Check excluded months
+  if (Array.isArray(item.excludedMonths) && item.excludedMonths.includes(validKey)) {
+    return false;
+  }
+
+  // Single month recurrence
+  if (item.recurrenceType === 'single_month') {
+    const targetMonth = item.monthKey || item.startMonthKey;
+    if (targetMonth && targetMonth.match(/^\d{4}-\d{2}$/)) {
+      return targetMonth === validKey;
+    }
+    return true;
+  }
+
+  // Installment recurrence
+  if (item.recurrenceType === 'installment') {
+    const start = item.startMonthKey || item.monthKey;
+    if (!start || !start.match(/^\d{4}-\d{2}$/)) return true;
+
+    const [sy, sm] = start.split('-').map(Number);
+    const [cy, cm] = validKey.split('-').map(Number);
+    const currentNum = (cy - sy) * 12 + (cm - sm) + 1;
+
+    let total = item.totalInstallments;
+    if (!total && item.endMonthKey && item.endMonthKey.match(/^\d{4}-\d{2}$/)) {
+      const [ey, em] = item.endMonthKey.split('-').map(Number);
+      total = (ey - sy) * 12 + (em - sm) + 1;
+    }
+    total = Math.max(total || 1, 1);
+
+    return currentNum >= 1 && currentNum <= total;
+  }
+
+  // Start month check
+  if (item.startMonthKey && item.startMonthKey.match(/^\d{4}-\d{2}$/)) {
+    if (validKey < item.startMonthKey) return false;
+  }
+
+  // End month check
+  if (item.endMonthKey && item.endMonthKey.match(/^\d{4}-\d{2}$/)) {
+    if (validKey > item.endMonthKey) return false;
+  }
+
+  return true;
+}
+
+/**
  * Synchronizes the entire incomes map to Firestore under the doc /incomes/{groupId}
  */
 export async function syncIncomesMapToFirestore(

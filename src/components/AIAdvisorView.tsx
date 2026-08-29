@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { FamilyGroup, FamilyMember, Transaction, AIAdviceResult, IncomeStream, FixedExpenseItem } from '../types';
-import { getMonthlyIncomeData } from '../utils/incomeUtils';
+import { getMonthlyIncomeData, isFixedExpensePaidInMonth, isFixedExpenseActiveInMonth } from '../utils/incomeUtils';
 import { parseCurrencyBR } from '../utils/currencyUtils';
 import { useAppStore } from '../store/useAppStore';
 import { BalanceAIInsightCard } from './BalanceAIInsightCard';
@@ -522,12 +522,14 @@ export const AIAdvisorView: React.FC<AIAdvisorViewProps> = ({
       }
     }
 
-    const fixedPaid = fixedList
-      .filter((e) => e.isPaid)
+    const currentFixedExpenses = fixedList.filter((e) => isFixedExpenseActiveInMonth(e, currentMonthKey));
+
+    const fixedPaid = currentFixedExpenses
+      .filter((e) => isFixedExpensePaidInMonth(e, currentMonthKey))
       .reduce((acc, e) => acc + e.amount, 0);
 
-    const fixedToPay = fixedList
-      .filter((e) => !e.isPaid)
+    const fixedToPay = currentFixedExpenses
+      .filter((e) => !isFixedExpensePaidInMonth(e, currentMonthKey))
       .reduce((acc, e) => acc + e.amount, 0);
 
     const balance = totalIncome - expenses;

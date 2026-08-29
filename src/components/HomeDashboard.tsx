@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { FamilyGroup, FamilyMember, Transaction, FixedExpenseItem, PiggyBankItem } from '../types';
 import { INITIAL_FIXED_EXPENSES, INITIAL_PIGGY_BANKS } from '../data/mockInitialData';
-import { getMonthlyIncomeData, formatMemberName } from '../utils/incomeUtils';
+import { getMonthlyIncomeData, formatMemberName, isFixedExpensePaidInMonth, isFixedExpenseActiveInMonth } from '../utils/incomeUtils';
 import { useAppStore } from '../store/useAppStore';
 import { 
   Plus, Wallet, Calendar, Users, ChevronRight, ChevronLeft, Play,
@@ -130,17 +130,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
 
   // Filter fixed expenses for the selected month
   const currentMonthFixedExpenses = useMemo(() => {
-    return fixedExpensesList.filter((item) => {
-      if (item.recurrenceType === 'single_month') {
-        return item.monthKey === selectedMonthKey;
-      }
-      if (item.recurrenceType === 'installment') {
-        const info = getInstallmentInfo(item, selectedMonthKey);
-        return info ? info.isActiveInMonth : item.monthKey === selectedMonthKey;
-      }
-      // Fixed & Variable roll over
-      return true;
-    });
+    return fixedExpensesList.filter((item) => isFixedExpenseActiveInMonth(item, selectedMonthKey));
   }, [fixedExpensesList, selectedMonthKey]);
 
   // Helper to calculate days diff for an item in selected month
@@ -161,7 +151,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
 
   // Smart due date categorization for unpaid items
   const unpaidAnalysis = useMemo(() => {
-    const unpaid = currentMonthFixedExpenses.filter((e) => !e.isPaid);
+    const unpaid = currentMonthFixedExpenses.filter((e) => !isFixedExpensePaidInMonth(e, selectedMonthKey));
     const overdueList: FixedExpenseItem[] = [];
     const dueTodayList: FixedExpenseItem[] = [];
     const dueWithin10DaysList: { item: FixedExpenseItem; diff: number }[] = [];
@@ -202,11 +192,11 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   }, [selectedDate]);
 
   const totalFixedPaid = currentMonthFixedExpenses
-    .filter((e) => e.isPaid)
+    .filter((e) => isFixedExpensePaidInMonth(e, selectedMonthKey))
     .reduce((acc, e) => acc + e.amount, 0);
 
   const totalFixedToPay = currentMonthFixedExpenses
-    .filter((e) => !e.isPaid)
+    .filter((e) => !isFixedExpensePaidInMonth(e, selectedMonthKey))
     .reduce((acc, e) => acc + e.amount, 0);
 
   const totalFixedProgrammed = totalFixedPaid + totalFixedToPay;

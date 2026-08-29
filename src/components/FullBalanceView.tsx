@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { FamilyGroup, FamilyMember, Transaction, FixedExpenseItem, PiggyBankItem } from '../types';
 import { INITIAL_FIXED_EXPENSES } from '../data/mockInitialData';
-import { getMonthlyIncomeData } from '../utils/incomeUtils';
+import { getMonthlyIncomeData, isFixedExpensePaidInMonth, isFixedExpenseActiveInMonth } from '../utils/incomeUtils';
 import { useAppStore } from '../store/useAppStore';
 import { 
   ChevronLeft, ChevronRight, Calendar, ShoppingCart, TrendingUp,
@@ -99,15 +99,15 @@ export const FullBalanceView: React.FC<FullBalanceViewProps> = ({
 
   const totalFixedPaid = useMemo(() => {
     return fixedExpensesList
-      .filter((e) => e.isPaid)
+      .filter((e) => isFixedExpenseActiveInMonth(e, selectedMonthKey) && isFixedExpensePaidInMonth(e, selectedMonthKey))
       .reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
-  }, [fixedExpensesList]);
+  }, [fixedExpensesList, selectedMonthKey]);
 
   const totalFixedPending = useMemo(() => {
     return fixedExpensesList
-      .filter((e) => !e.isPaid)
+      .filter((e) => isFixedExpenseActiveInMonth(e, selectedMonthKey) && !isFixedExpensePaidInMonth(e, selectedMonthKey))
       .reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
-  }, [fixedExpensesList]);
+  }, [fixedExpensesList, selectedMonthKey]);
 
   // Expenses for the month
   const totalExpenses = activeTransactions

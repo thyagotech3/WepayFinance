@@ -1,7 +1,7 @@
 import { useAppStore } from "../store/useAppStore";
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { FamilyMember, CategoryType, SplitType, Transaction, IncomeStream, IncomeHistoryEntry } from '../types';
+import { FamilyMember, CategoryType, SplitType, Transaction, IncomeStream, IncomeHistoryEntry, FixedExpenseItem } from '../types';
 import { CATEGORIES_META } from '../data/suggestions';
 import { parseCurrencyBR } from '../utils/currencyUtils';
 import { 
@@ -44,7 +44,7 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
   onAddIncomeStream,
   onOpenFixedExpenses,
 }) => {
-  const { group, currentMemberId } = useAppStore();
+  const { group, currentMemberId, fixedExpenses, setFixedExpenses } = useAppStore();
   const members = group?.members || [];
   const currentMember = members.find((m) => m.id === currentMemberId) || members[0];
   const [transactionType, setTransactionType] = useState<'expense' | 'income' | 'fixed'>(initialType);
@@ -293,8 +293,33 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
       12, 0, 0
     ).toISOString();
 
+    const monthKey = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`;
+    const dayStr = String(selectedDate.getDate()).padStart(2, '0');
+    let fixedExpenseId: string | undefined = undefined;
+
+    if (transactionType === 'fixed') {
+      fixedExpenseId = `fe_${Date.now()}`;
+      const newFixedItem: FixedExpenseItem = {
+        id: fixedExpenseId,
+        title: finalDescription,
+        amount: numericAmount,
+        category: category as any,
+        paidByMemberId,
+        dueDate: dayStr,
+        isPaid: true,
+        paidMonths: [monthKey],
+        recurrenceType: 'fixed_amount',
+        monthKey,
+        notes: 'Lançado via Novo Lançamento',
+      };
+      const updatedFixed = [newFixedItem, ...(fixedExpenses || [])];
+      setFixedExpenses(updatedFixed);
+      localStorage.setItem('wepay_fixed_expenses', JSON.stringify(updatedFixed));
+      window.dispatchEvent(new Event('wepay_fixed_expenses_updated'));
+    }
+
     onAddTransaction({
-      description: finalDescription,
+      description: transactionType === 'fixed' ? `[Gasto Fixo] ${finalDescription}` : finalDescription,
       amount: numericAmount,
       category,
       categoryIcon,
@@ -302,6 +327,7 @@ export const NewTransactionView: React.FC<NewTransactionViewProps> = ({
       paidByMemberId,
       splitType,
       isRecurrent: transactionType === 'fixed',
+      fixedExpenseId,
       aiCategorized: false,
       date: txDate,
     });
